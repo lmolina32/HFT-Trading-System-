@@ -47,18 +47,14 @@ class OrderBook:
         else:
             levels[price] = PriceLevel(price=price, total_qty=qty, order_count=1)
             heapq.heappush(heap, heap_price)
-            print("\n\n\n\n")
-            print(heap)
 
     def delete_order(self, order_id: int) -> None:
         if order_id not in self.orders:
             return
         order = self.orders.pop(order_id)
         if order.side == SIDE.BUY:
-            print('buy')
             levels = self.bid_levels
         else:
-            print('ask')
             levels = self.ask_levels
         level = levels[order.price]
         level.total_qty -= order.quantity
@@ -117,6 +113,7 @@ class OrderBook:
             return
 
         order = self.orders[order_id]
+        symbol = order.symbol
         old_time = order.timestamp
 
         self.delete_order(order_id)
