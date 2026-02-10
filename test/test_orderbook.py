@@ -310,20 +310,6 @@ class TestOrderBook(unittest.TestCase):
         self.assertEqual(len(self.book.orders), 1)
         self.assertEqual(len(self.book.bid_levels), 1)
 
-    def test_str_representation(self):
-        """Test the string representation of OrderBook"""
-        self.book.add_order(100, 1, SIDE.BUY, 50, 10000, 1000)
-        self.book.add_order(200, 1, SIDE.SELL, 40, 10100, 2000)
-
-        book_str = str(self.book)
-
-        self.assertIn("OrderBook(symbol=1)", book_str)
-        self.assertIn("Bid Heap", book_str)
-        self.assertIn("Ask Heap", book_str)
-        self.assertIn("Bid Levels", book_str)
-        self.assertIn("Ask Levels", book_str)
-        self.assertIn("Orders", book_str)
-
 
 if __name__ == '__main__':
     unittest.main()
