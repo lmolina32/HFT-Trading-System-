@@ -34,7 +34,7 @@ def parse_message(data):
         return {}
     else:
         print(f"{header.msg_type}")
-        return header  # Just return header for unknown types
+        return header
 
 def main():
     order_manager = OrderBookManager()
@@ -60,37 +60,28 @@ def main():
             if len(buffer) < header.length:
                 break
 
-
             packet = buffer[:length]
-            buffer = buffer[length:]  # Remove processed packet from buffer
+            buffer = buffer[length:]
 
             # Process the packet
-            #print(struct.pack('<Q', header.magic), f"Magic: {magic:016x} Length: {length} Sequence: {seq_num} Timestamp: {timestamp} Message Type: {msg_type}")
-            #print(parse_message(packet))
-
             if header.magic_number == MAGIC_NUMBER:
-                #if flag and header.seq_num != old_seq_num + 1:
-
-                    #print("this is the seq", header.seq_num)
-                    #raise Exception(f"ERROR missed packet {seq_num}")
-                #flag = True
-                #old_seq_num = header.seq_num
                 if not synchronizer.sync:
                     synchronizer.buffer_live_message(header, parse_message(packet))
                 else:
                     seq_tracker.check(header.seq_num)
                     parse_live_message(header, parse_message(packet), order_manager)
-                    for sym, book in sorted(order_manager.books.items()):
-                        bb = book.get_best_bid()
-                        ba = book.get_best_ask()
-                        print(
-                            f"seq={header.seq_num} sym={sym}: "
-                            f"BID={bb[0] if bb else '-'}x"
-                            f"{bb[1] if bb else '-'} | "
-                            f"ASK={ba[0] if ba else '-'}x"
-                            f"{ba[1] if ba else '-'} "
-                            f"volume={book.total_volume}"
-                        )
+                    if header.seq_num % 1000 == 0:
+                        for sym, book in sorted(order_manager.books.items()):
+                            bb = book.get_best_bid()
+                            ba = book.get_best_ask()
+                            print(
+                                f"seq={header.seq_num} sym={sym}: "
+                                f"BID={bb[0] if bb else '-'}x"
+                                f"{bb[1] if bb else '-'} | "
+                                f"ASK={ba[0] if ba else '-'}x"
+                                f"{ba[1] if ba else '-'} "
+                                f"volume={book.total_volume}"
+                            )
 
             else:
                 if not synchronizer.sync:
