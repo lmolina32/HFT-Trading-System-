@@ -124,11 +124,21 @@ class OrderBook:
                        price=price,
                        timestamp=old_time)
 
-    def get_best_bid(self):
-        pass
+    def get_best_bid(self) -> Optional[Tuple[int, int]]:
+        self._clear_top_of_bid()
+        if not self.bid_heap:
+            return None
+        best_price = -self.bid_heap[0]
+        level = self.bid_levels[best_price]
+        return (best_price, level.total_qty)
 
-    def get_best_ask(self):
-        pass
+    def get_best_ask(self) -> Optional[Tuple[int, int]]:
+        self._clear_top_of_ask()
+        if not self.ask_heap:
+            return None
+        best_price = self.ask_heap[0]
+        level = self.ask_levels[best_price]
+        return (best_price, level.total_qty)
 
     def validate(self):
         """add validation"""
@@ -137,6 +147,14 @@ class OrderBook:
     def clear(self):
         """Error -> clear book"""
         pass
+
+    def _clear_top_of_bid(self) -> None:
+        while self.bid_heap and (-self.bid_heap[0]) not in self.bid_levels:
+            heapq.heappop(self.bid_heap)
+
+    def _clear_top_of_ask(self) -> None:
+        while self.ask_heap and self.ask_heap[0] not in self.ask_levels:
+            heapq.heappop(self.ask_heap)
 
     def __str__(self) -> str:
         lines = [f"OrderBook(symbol={self.symbol})"]
@@ -178,7 +196,10 @@ class OrderBookManager:
 
     def __init__(self):
         self.books: Dict[int, OrderBook] = {}
-        self.bbo_log: List[BBORecord] = {}
+        self.bbo_log: List[BBORecord] = []
+        self.bbo_by_seq: Dict[int, BBORecord] = {}
+        self._total_volume: int = 0
+        self.cumulative_volume: Dict[int, int] = {}
 
     def get_or_create_book(self, symbol: int) -> OrderBook:
         if symbol not in self.books:
@@ -190,6 +211,8 @@ class OrderBookManager:
         # TODO: flags may be used later on
         book = self.get_or_create_book(symbol)
         book.add_order(order_id, symbol, side, qty, price, timestamp)
+        self._record_volume(seq_num)
+        self._log_bbo(book, seq_num)
 
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
         book = self._find_book(order_id, "DELETE_ORDER", seq_num)
@@ -197,6 +220,8 @@ class OrderBookManager:
             print('need to sync')
             return
         book.delete_order(order_id)
+        self._record_volume(seq_num)
+        self._log_bbo(book, seq_num)
 
     def process_trade(self, seq_num: int, order_id: int, qty: int, price: int) -> None:
         book = self._find_book(order_id, "TRADE", seq_num)
@@ -204,6 +229,8 @@ class OrderBookManager:
             print('need to sync')
             return
         book.trade_order(order_id, qty, price)
+        self._record_volume(seq_num)
+        self._log_bbo(book, seq_num)
 
     def process_modify_order(self, seq_num: int, order_id: int, side: SIDE, qty: int, price: int) -> None:
         book = self._find_book(order_id, "MODIFY_ORDER", seq_num)
@@ -211,13 +238,23 @@ class OrderBookManager:
             print('need to sync')
             return
         book.modify_order(order_id, side, qty, price)
-
+        self._record_volume(seq_num)
+        self._log_bbo(book, seq_num)
 
     def process_trade_summary(self, seq_num: int, symbol: int, aggressor: SIDE, total_qty: int, last_price: int) -> None:
-        # TODO: ASK about trad summary
+        # TODO: ASK about trade summary
+        self._record_volume(seq_num)
         print(f"seq={seq_num}: TRADE Summary symbol={symbol}"
               f" aggressor={'BUY' if aggressor == SIDE.BUY else 'SELL'} "
               f"total_qty={total_qty} last_price={last_price}")
+
+    def process_heartbeat(self, seq_num: int) -> None:
+        self._record_volume(seq_num)
+
+    def get_volume_in_range(self, seq_start: int, seq_end: int) -> int:
+        vol_end = self.cumulative_volume[seq_end]
+        vol_start = self.cumulative_volume[seq_start]
+        return vol_end - vol_start
 
     def _find_book(self, order_id: int, msg: str, seq_num: int) -> OrderBook:
         for symbol, book in self.books.items():
@@ -230,6 +267,50 @@ class OrderBookManager:
             f"This is not in the book. INCONSISTENT STATE"
         )
         return None
+
+    def _record_volume(self, seq_num: int) -> None:
+        self.cumulative_volume[seq_num] = self._total_volume
+
+    def _log_bbo(self, book: OrderBook, seq_num: int) -> None:
+        best_bid = book.get_best_bid()
+        best_ask = book.get_best_ask()
+        record = BBORecord(
+            seq_num = seq_num,
+            symbol = book.symbol,
+            best_bid_price = best_bid[0] if best_bid else None,
+            best_bid_qty = best_bid[1] if best_bid else None,
+            best_ask_price = best_ask[0] if best_ask else None,
+            best_ask_qty = best_ask[1] if best_ask else None
+        )
+        self.bbo_log.append(record)
+        self.bbo_by_seq[seq_num] = record
+        print(f"seq={seq_num} sym={book.symbol}: BID={best_bid[0] if best_bid else '-'}x{best_bid[1] if best_bid else '-'} "
+              f"ASK={best_ask[0] if best_ask else '-'}x{best_ask[1] if best_ask else '-'}"
+        )
+
+
+
+class SnapShotSynchronizer:
+    def __init__(self, manager: OrderBookManager):
+        self.book_manager = manager
+        self.sync: False = False
+        self.last_snap_seq_num: int = 0
+        self.live_buffer: List[Tuple[MDHeader, any]] = []
+        self.snap_state: Dict[int, any] = {}
+        self.snap_complete: bool = False
+
+    def handle_snapshot_message() -> None:
+        pass
+
+    def buffer_live_message() -> None:
+        pass
+
+    def check_snapshot_complete() -> None:
+        pass
+
+    def replay_buffered_messages() -> None:
+        pass
+
 
 
 class SequenceTracker():

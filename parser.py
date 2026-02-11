@@ -98,6 +98,7 @@ def parse_live_message(header: MDHeader, body: any, manager: OrderBookManager) -
         print(manager.books.get(1, {}))
         print(manager.books.get(2, {}))
     elif header.msg_type == MSG_TYPE.HEARTBEAT:
+        manager.process_heartbeat(seq_num=header.seq_num)
         print(f"seq={header.seq_num}: HEARTBEAT")
         print(manager.books.get(1, {}))
         print(manager.books.get(2, {}))
