@@ -43,74 +43,15 @@ def parse_message(data):
         print(f"{header.msg_type}")
         return header  # Just return header for unknown types
 
-def parse_live_message(header: MDHeader, body: any, manager: OrderBookManager) -> None:
-    if header.msg_type == MSG_TYPE.NEW_ORDER:
-        print("new Order")
-        manager.process_new_order(
-            seq_num=header.seq_num,
-            timestamp=header.timestamp,
-            order_id=body.order_id,
-            symbol=body.symbol,
-            side=body.side,
-            qty=body.quantity,
-            price=body.price,
-            flags=body.flags
-        )
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.DELETE_ORDER:
-        manager.process_delete_order(
-            seq_num=header.seq_num,
-            order_id=body.order_id
-        )
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.MODIFY_ORDER:
-        manager.process_modify_order(
-            seq_num=header.seq_num,
-            order_id=body.order_id,
-            side=body.side,
-            qty=body.quantity,
-            price=body.price
-        )
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.TRADE:
-        manager.process_trade(
-            seq_num=header.seq_num,
-            order_id=body.order_id,
-            qty=body.quantity,
-            price=body.price
-        )
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.TRADE_SUMMARY:
-        manager.process_trade_summary(
-            seq_num=header.seq_num,
-            symbol=body.symbol,
-            aggressor=body.aggressor_side,
-            total_qty=body.total_quantity,
-            last_price=body.last_price
-        )
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-    elif header.msg_type == MSG_TYPE.HEARTBEAT:
-        manager.process_heartbeat(seq_num=header.seq_num)
-        print(f"seq={header.seq_num}: HEARTBEAT")
-        print(manager.books.get(1, {}))
-        print(manager.books.get(2, {}))
-
-
-
-
 def main():
     order_manager = OrderBookManager()
+    synchronizer = SnapShotSynchronizer(order_manager)
+    seq_tracker = SequenceTracker()
+
     buffer = b''
     old = None
     flag = False
+
     for line in sys.stdin:
         line = line.rstrip()
         if line.startswith(("Read", "Subscribed", "Listening")):
@@ -126,11 +67,6 @@ def main():
             header = MDHeader(buffer[:23])
             if len(buffer) < header.length:
                 break
-            if flag and header.seq_num != old_seq_num + 1:
-                print("this is the seq", header.seq_num)
-                raise Exception(f"ERROR missed packet {seq_num}")
-            flag = True
-            old_seq_num = header.seq_num
 
 
             packet = buffer[:length]
@@ -138,9 +74,32 @@ def main():
 
             # Process the packet
             #print(struct.pack('<Q', header.magic), f"Magic: {magic:016x} Length: {length} Sequence: {seq_num} Timestamp: {timestamp} Message Type: {msg_type}")
+            #print(parse_message(packet))
+            print(header)
             print(parse_message(packet))
+            continue
+
             if header.magic_number == MAGIC_NUMBER:
-                parse_live_message(header, parse_message(packet), order_manager)
+                #if flag and header.seq_num != old_seq_num + 1:
+
+                    #print("this is the seq", header.seq_num)
+                    #raise Exception(f"ERROR missed packet {seq_num}")
+                #flag = True
+                #old_seq_num = header.seq_num
+                if not synchronizer.sync:
+                    synchronizer.buffer_live_message(header, parse_message(packet))
+                else:
+                    seq_tracker.check(header.seq_num)
+                    parse_live_message(header, parse_message(packet), order_manager)
+            else:
+                if not synchronizer.sync:
+                    synchronizer.handle_snapshot_message(header, parse_message(packet))
+                    print(header)
+                    print(parse_message(packet))
+
+                    if synchronizer.snap_complete:
+                        print("snapshot complete for all symbols")
+                        synchronizer.replay_buffered_messages()
 
 
 

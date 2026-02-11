@@ -146,7 +146,11 @@ class OrderBook:
 
     def clear(self):
         """Error -> clear book"""
-        pass
+        self.bid_heap.clear()
+        self.bid_levels.clear()
+        self.ask_heap.clear()
+        self.ask_levels.clear()
+        self.orders.clear()
 
     def _clear_top_of_bid(self) -> None:
         while self.bid_heap and (-self.bid_heap[0]) not in self.bid_levels:
@@ -293,24 +297,75 @@ class OrderBookManager:
 class SnapShotSynchronizer:
     def __init__(self, manager: OrderBookManager):
         self.book_manager = manager
-        self.sync: False = False
+        self.sync: bool = False
         self.last_snap_seq_num: int = 0
         self.live_buffer: List[Tuple[MDHeader, any]] = []
         self.snap_state: Dict[int, any] = {}
         self.snap_complete: bool = False
+        self.last_wanted_seq_num: int = 187_900_000
 
-    def handle_snapshot_message() -> None:
-        pass
+    def handle_snapshot_message(self, header: MDHeader, body: any) -> None:
+        # TODO do more error checking -> just trying to get it to run
+        if header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
+            symbol = body.symbol
+            last_md_seq_num = body.last_md_seq_num
 
-    def buffer_live_message() -> None:
-        pass
+            if symbol in self.snap_state and self.snap_state[symbol]["orders_received"] == self.snap_state[symbol]["expected_orders"]:
 
-    def check_snapshot_complete() -> None:
-        pass
+                if last_md_seq_num < self.last_wanted_seq_num:
+                    self.snap_complete = True
+                    return
 
-    def replay_buffered_messages() -> None:
-        pass
+            bid_count = body.bid_count
+            ask_count = body.ask_count
 
+            self.snap_state[symbol] = {
+                "ask_count": ask_count,
+                "bid_count": bid_count,
+                "last_md_seq_num": last_md_seq_num,
+                "orders_received": 0,
+                "expected_orders": ask_count + bid_count
+            }
+
+            self.last_snap_seq_num = max(self.last_snap_seq_num, last_md_seq_num)
+
+            #book = self.book_manager.get_or_create_book(symbol)
+            #book.clear()
+        elif header.msg_type == MSG_TYPE.NEW_ORDER:
+            symbol = body.symbol
+            if symbol not in self.snap_state:
+                print(f"NEW_ORDER for symbol {symbol} wihtout SNAPSHOT INFO")
+                return
+            self.book_manager.process_new_order(
+                seq_num=header.seq_num,
+                timestamp=header.timestamp,
+                order_id=body.order_id,
+                symbol=symbol,
+                side=body.side,
+                qty=body.quantity,
+                price=body.price,
+                flags=body.flags
+            )
+            self.snap_state[symbol]["orders_received"] += 1
+
+            # TODO: add some validation -> ensure book is consistent + log snap finished
+
+
+        else:
+            print(body)
+            print("deal with this edge case \n\n\n\n")
+
+
+    def buffer_live_message(self, header: MDHeader, body: any) -> None:
+        self.live_buffer.append((header, body))
+
+    def replay_buffered_messages(self) -> None:
+        # TODO add more logging skipped + processed
+        for header, body in self.live_buffer:
+            if header.seq_num > self.last_snap_seq_num:
+                parse_live_message(header, body, self.book_manager)
+        self.live_buffer.clear()
+        self.sync = True
 
 
 class SequenceTracker():
@@ -325,3 +380,51 @@ class SequenceTracker():
             raise KeyError(f"Sequence Gap: expected seq={self.expected_seq}, got seq={seq_num}. NEED TO RESYNC")
 
         self.expected_seq = seq_num + 1
+
+
+def parse_live_message(header: MDHeader, body: any, manager: OrderBookManager) -> None:
+    if header.msg_type == MSG_TYPE.NEW_ORDER:
+        manager.process_new_order(
+            seq_num=header.seq_num,
+            timestamp=header.timestamp,
+            order_id=body.order_id,
+            symbol=body.symbol,
+            side=body.side,
+            qty=body.quantity,
+            price=body.price,
+            flags=body.flags
+        )
+    elif header.msg_type == MSG_TYPE.DELETE_ORDER:
+        manager.process_delete_order(
+            seq_num=header.seq_num,
+            order_id=body.order_id
+        )
+    elif header.msg_type == MSG_TYPE.MODIFY_ORDER:
+        manager.process_modify_order(
+            seq_num=header.seq_num,
+            order_id=body.order_id,
+            side=body.side,
+            qty=body.quantity,
+            price=body.price
+        )
+    elif header.msg_type == MSG_TYPE.TRADE:
+        manager.process_trade(
+            seq_num=header.seq_num,
+            order_id=body.order_id,
+            qty=body.quantity,
+            price=body.price
+        )
+    elif header.msg_type == MSG_TYPE.TRADE_SUMMARY:
+        manager.process_trade_summary(
+            seq_num=header.seq_num,
+            symbol=body.symbol,
+            aggressor=body.aggressor_side,
+            total_qty=body.total_quantity,
+            last_price=body.last_price
+        )
+    elif header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
+        print("This should not print or be here header.msg_type -> snpashotinfo in parse_message")
+    elif header.msg_type == MSG_TYPE.HEARTBEAT:
+        manager.process_heartbeat(seq_num=header.seq_num)
+
+
