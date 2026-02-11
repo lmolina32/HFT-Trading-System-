@@ -14,6 +14,7 @@ class OrderBook:
         self.ask_heap: List[int] = []
         self.ask_levels: dict[int, PriceLevel] = {}
         self.orders: dict[int, Order] = {}
+        self.total_volume: int = 0
 
     def add_order(self, order_id: int, symbol: int, side: SIDE, qty: int, price: int, timestamp: int) -> None:
         order = Order(
@@ -88,6 +89,7 @@ class OrderBook:
 
         order.quantity -= qty
         level.total_qty -= qty
+        self.total_volume += qty
 
         if level.total_qty < 0:
             print(f"[Book {self.symbol}] Negative total quantity={level.total_qty}"
@@ -161,40 +163,16 @@ class OrderBook:
             heapq.heappop(self.ask_heap)
 
     def __str__(self) -> str:
-        lines = [f"OrderBook(symbol={self.symbol})"]
-        lines.append("=" * 60)
-
-
-        # Bid Heap
-        lines.append(f"Bid Heap (negated, len={len(self.bid_heap)}):")
-        lines.append(f"  {self.bid_heap}")
-
-        # Bid Levels
-        lines.append(f"Bid Levels (dict, len={len(self.bid_levels)}):")
-        for price in sorted(self.bid_levels.keys(), reverse=True):
-            level = self.bid_levels[price]
-            lines.append(f"  {price}: qty={level.total_qty}, orders={level.order_count}")
-
-        lines.append("-" * 60)
-
-        # Ask Heap
-        lines.append(f"Ask Heap (len={len(self.ask_heap)}):")
-        lines.append(f"  {self.ask_heap}")
-
-        # Ask Levels
-        lines.append(f"Ask Levels (dict, len={len(self.ask_levels)}):")
-        for price in sorted(self.ask_levels.keys()):
-            level = self.ask_levels[price]
-            lines.append(f"  {price}: qty={level.total_qty}, orders={level.order_count}")
-
-        lines.append("-" * 60)
-
-        # Orders
-        lines.append(f"Orders (dict, len={len(self.orders)}):")
-        for order_id, order in sorted(self.orders.items()):
-            lines.append(f"  {order}")
-
-        return "\n".join(lines)
+        bb = self.get_best_bid()
+        ba = self.get_best_ask()
+        bid_str = f"{bb[0]}x{bb[1]}" if bb else "EMPTY"
+        ask_str = f"{ba[0]}x{ba[1]}" if ba else "EMPTY"
+        return (
+            f"OrderBook(symbol={self.symbol}, "
+            f"bid={bid_str}, ask={ask_str}, "
+            f"orders={len(self.orders)}), "
+            f"volume={self.total_volume}"
+        )
 
 class OrderBookManager:
 
@@ -215,7 +193,6 @@ class OrderBookManager:
         # TODO: flags may be used later on
         book = self.get_or_create_book(symbol)
         book.add_order(order_id, symbol, side, qty, price, timestamp)
-        self._record_volume(seq_num)
         self._log_bbo(book, seq_num)
 
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
@@ -224,7 +201,6 @@ class OrderBookManager:
             print('need to sync')
             return
         book.delete_order(order_id)
-        self._record_volume(seq_num)
         self._log_bbo(book, seq_num)
 
     def process_trade(self, seq_num: int, order_id: int, qty: int, price: int) -> None:
@@ -233,7 +209,6 @@ class OrderBookManager:
             print('need to sync')
             return
         book.trade_order(order_id, qty, price)
-        self._record_volume(seq_num)
         self._log_bbo(book, seq_num)
 
     def process_modify_order(self, seq_num: int, order_id: int, side: SIDE, qty: int, price: int) -> None:
@@ -242,18 +217,16 @@ class OrderBookManager:
             print('need to sync')
             return
         book.modify_order(order_id, side, qty, price)
-        self._record_volume(seq_num)
         self._log_bbo(book, seq_num)
 
     def process_trade_summary(self, seq_num: int, symbol: int, aggressor: SIDE, total_qty: int, last_price: int) -> None:
         # TODO: ASK about trade summary
-        self._record_volume(seq_num)
         print(f"seq={seq_num}: TRADE Summary symbol={symbol}"
               f" aggressor={'BUY' if aggressor == SIDE.BUY else 'SELL'} "
               f"total_qty={total_qty} last_price={last_price}")
 
     def process_heartbeat(self, seq_num: int) -> None:
-        self._record_volume(seq_num)
+        print("heartbeat", end=" ")
 
     def get_volume_in_range(self, seq_start: int, seq_end: int) -> int:
         vol_end = self.cumulative_volume[seq_end]
@@ -274,6 +247,7 @@ class OrderBookManager:
 
     def _record_volume(self, seq_num: int) -> None:
         self.cumulative_volume[seq_num] = self._total_volume
+        print(f"seq_num={seq_num} volume={self.cumulative_volume.get(seq_num, '-')}")
 
     def _log_bbo(self, book: OrderBook, seq_num: int) -> None:
         best_bid = book.get_best_bid()
@@ -290,6 +264,7 @@ class OrderBookManager:
         self.bbo_by_seq[seq_num] = record
         print(f"seq={seq_num} sym={book.symbol}: BID={best_bid[0] if best_bid else '-'}x{best_bid[1] if best_bid else '-'} "
               f"ASK={best_ask[0] if best_ask else '-'}x{best_ask[1] if best_ask else '-'}"
+              f" volume={book.total_volume}"
         )
 
 
@@ -302,7 +277,7 @@ class SnapShotSynchronizer:
         self.live_buffer: List[Tuple[MDHeader, any]] = []
         self.snap_state: Dict[int, any] = {}
         self.snap_complete: bool = False
-        self.last_wanted_seq_num: int = 187_900_000
+        self.completed_symbols: set = set()
 
     def handle_snapshot_message(self, header: MDHeader, body: any) -> None:
         # TODO do more error checking -> just trying to get it to run
@@ -310,11 +285,9 @@ class SnapShotSynchronizer:
             symbol = body.symbol
             last_md_seq_num = body.last_md_seq_num
 
-            if symbol in self.snap_state and self.snap_state[symbol]["orders_received"] == self.snap_state[symbol]["expected_orders"]:
-
-                if last_md_seq_num < self.last_wanted_seq_num:
-                    self.snap_complete = True
-                    return
+            if symbol in self.completed_symbols:
+                self.snap_complete = True
+                return
 
             bid_count = body.bid_count
             ask_count = body.ask_count
@@ -324,33 +297,39 @@ class SnapShotSynchronizer:
                 "bid_count": bid_count,
                 "last_md_seq_num": last_md_seq_num,
                 "orders_received": 0,
-                "expected_orders": ask_count + bid_count
+                "expected_total": ask_count + bid_count
             }
 
             self.last_snap_seq_num = max(self.last_snap_seq_num, last_md_seq_num)
 
-            #book = self.book_manager.get_or_create_book(symbol)
-            #book.clear()
+            book = self.book_manager.get_or_create_book(symbol)
+            book.clear()
+
         elif header.msg_type == MSG_TYPE.NEW_ORDER:
             symbol = body.symbol
             if symbol not in self.snap_state:
                 print(f"NEW_ORDER for symbol {symbol} wihtout SNAPSHOT INFO")
                 return
-            self.book_manager.process_new_order(
-                seq_num=header.seq_num,
-                timestamp=header.timestamp,
+
+            if symbol in self.completed_symbols:
+                return
+
+            book = self.book_manager.get_or_create_book(symbol)
+            book.add_order(
                 order_id=body.order_id,
                 symbol=symbol,
                 side=body.side,
                 qty=body.quantity,
                 price=body.price,
-                flags=body.flags
+                timestamp=header.timestamp,
             )
+
             self.snap_state[symbol]["orders_received"] += 1
+            state = self.snap_state[symbol]
 
+            if state["orders_received"] == state["expected_total"]:
+                self.completed_symbols.add(symbol)
             # TODO: add some validation -> ensure book is consistent + log snap finished
-
-
         else:
             print(body)
             print("deal with this edge case \n\n\n\n")

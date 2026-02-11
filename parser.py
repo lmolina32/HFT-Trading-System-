@@ -8,13 +8,6 @@ from typing import Dict, Optional, Tuple, List
 from market_data_struct import *
 from order_book import *
 
-@dataclass
-class PriceLevel:
-    price: int
-    total_qty: int = 0
-    order_count: int = 0
-
-
 def parse_message(data):
     """Parse a binary message and return the appropriate message object"""
     if len(data) < MDHeader.STRUCT_SIZE:
@@ -53,11 +46,10 @@ def main():
     flag = False
 
     for line in sys.stdin:
-        line = line.rstrip()
-        if line.startswith(("Read", "Subscribed", "Listening")):
+        hex_line = line.rstrip()
+        if hex_line.startswith(("Read", "Subscribed", "Listening")):
             continue
 
-        hex_line, read_amt = line.split()
         hexString = hex_line.replace(':', '')
         data = bytes.fromhex(hexString)
         buffer += data
@@ -75,9 +67,6 @@ def main():
             # Process the packet
             #print(struct.pack('<Q', header.magic), f"Magic: {magic:016x} Length: {length} Sequence: {seq_num} Timestamp: {timestamp} Message Type: {msg_type}")
             #print(parse_message(packet))
-            print(header)
-            print(parse_message(packet))
-            continue
 
             if header.magic_number == MAGIC_NUMBER:
                 #if flag and header.seq_num != old_seq_num + 1:
@@ -91,15 +80,26 @@ def main():
                 else:
                     seq_tracker.check(header.seq_num)
                     parse_live_message(header, parse_message(packet), order_manager)
+                    for sym, book in sorted(order_manager.books.items()):
+                        bb = book.get_best_bid()
+                        ba = book.get_best_ask()
+                        print(
+                            f"seq={header.seq_num} sym={sym}: "
+                            f"BID={bb[0] if bb else '-'}x"
+                            f"{bb[1] if bb else '-'} | "
+                            f"ASK={ba[0] if ba else '-'}x"
+                            f"{ba[1] if ba else '-'} "
+                            f"volume={book.total_volume}"
+                        )
+
             else:
                 if not synchronizer.sync:
                     synchronizer.handle_snapshot_message(header, parse_message(packet))
-                    print(header)
-                    print(parse_message(packet))
-
                     if synchronizer.snap_complete:
                         print("snapshot complete for all symbols")
                         synchronizer.replay_buffered_messages()
+                        for sym, book in sorted(order_manager.books.items()):
+                            print(f" {book}")
 
 
 
