@@ -20,7 +20,7 @@ class TestOrderBookManager(unittest.TestCase):
     def test_initialization(self):
         """Test OrderBookManager initializes correctly"""
         self.assertEqual(len(self.manager.books), 0)
-        self.assertIsInstance(self.manager.bbo_log, dict)
+        self.assertIsInstance(self.manager.bbo_log, list)
 
     def test_get_or_create_book_new_symbol(self):
         """Test creating a new book for a symbol"""
