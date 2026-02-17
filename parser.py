@@ -40,10 +40,7 @@ def main():
     order_manager = OrderBookManager()
     synchronizer = SnapShotSynchronizer(order_manager)
     seq_tracker = SequenceTracker()
-
     buffer = b''
-    old = None
-    flag = False
 
     for line in sys.stdin:
         hex_line = line.rstrip()
@@ -63,7 +60,7 @@ def main():
             packet = buffer[:length]
             buffer = buffer[length:]
 
-            # Process the packet
+            # Process LIVE Channel
             if header.magic_number == MAGIC_NUMBER:
                 if not synchronizer.sync:
                     synchronizer.buffer_live_message(header, parse_message(packet))
@@ -76,10 +73,10 @@ def main():
                             ba = book.get_best_ask()
                             print(
                                 f"seq={header.seq_num} sym={sym}: "
-                                f"BID={bb[0] if bb else '-'}x"
-                                f"{bb[1] if bb else '-'} | "
-                                f"ASK={ba[0] if ba else '-'}x"
-                                f"{ba[1] if ba else '-'} "
+                                f"BID={bb[1] if bb else '-'}@"
+                                f"{bb[0] if bb else '-'} | "
+                                f"ASK={ba[1] if ba else '-'}@"
+                                f"{ba[0] if ba else '-'} "
                                 f"volume={book.total_volume}"
                             )
 
@@ -87,7 +84,7 @@ def main():
                 if not synchronizer.sync:
                     synchronizer.handle_snapshot_message(header, parse_message(packet))
                     if synchronizer.snap_complete:
-                        print("snapshot complete for all symbols")
+                        print("Snapshot complete for all symbols")
                         synchronizer.replay_buffered_messages()
                         for sym, book in sorted(order_manager.books.items()):
                             print(f" {book}")

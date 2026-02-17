@@ -17,6 +17,12 @@ class OrderBook:
         self.total_volume: int = 0
 
     def add_order(self, order_id: int, symbol: int, side: SIDE, qty: int, price: int, timestamp: int) -> None:
+        if order_id in self.orders:
+            raise ValueError(f"[Book {symbol}] Duplicate order id: {order_id}")
+
+        if qty <= 0:
+            raise ValueError(f"[Book {symbol}] qty={qty} qty <=0 for order id: {order_id}")
+
         order = Order(
             order_id=order_id,
             symbol=symbol,
@@ -25,13 +31,9 @@ class OrderBook:
             price=price,
             timestamp=timestamp
         )
-        if order_id in self.orders:
-            raise ValueError(f"[Book {symbol}] Duplicate order id: {id}")
 
-        # TODO: turn all print to raise ValueError
-        if qty <= 0:
-            print(f"[Book {symbol}] qty={qty} qty <=0 for order id: {id}")
         self.orders[order_id] = order
+
         if side == SIDE.BUY:
             levels = self.bid_levels
             heap = self.bid_heap
@@ -62,24 +64,25 @@ class OrderBook:
         level.order_count -= 1
 
         # consistency checks
-        #TODO: turn all prints to `raise KeyError`
         if level.total_qty < 0:
-            print(f"[Book {self.symbol}] Negative total quantity={level.total_qty}"
+            raise ValueError(f"[Book {self.symbol}] Negative total quantity={level.total_qty}"
                              f"price={order.price} after deleting order id {order_id}")
         if level.order_count < 0:
-            print(f"[Book {self.symbol}] Negative order_count={level.order_count}"
+            raise ValueError(f"[Book {self.symbol}] Negative order_count={level.order_count}"
                              f"price={order.price} after deleting order id {order_id}")
         if level.order_count == 0:
             if level.total_qty != 0:
-                print(f"[Book {self.symbol}] order_count=0 but total_qty{level.total_qty}"
+                raise ValueError(f"[Book {self.symbol}] order_count=0 but total_qty{level.total_qty}"
                                  f"at price={order.price}. INCONSISTENT STATE")
             del levels[order.price]
 
     def trade_order(self, order_id: int, qty: int, price: int) -> None:
         #TODO -> convert print -> to RAISE KeyError and do error check here
         if order_id not in self.orders:
-            return
+            raise KeyError(f"[Book {self.symbol}] trade_oder: order_id={order_id} not found")
+
         order = self.orders[order_id]
+
         if order.side == SIDE.BUY:
             levels = self.bid_levels
         else:
@@ -92,7 +95,7 @@ class OrderBook:
         self.total_volume += qty
 
         if level.total_qty < 0:
-            print(f"[Book {self.symbol}] Negative total quantity={level.total_qty}"
+            raise ValueError(f"[Book {self.symbol}] Negative total quantity={level.total_qty}"
                   f"\nprice={order.price} after trading worder id {order_id}")
 
         if order.quantity == 0:
@@ -100,19 +103,18 @@ class OrderBook:
             level.order_count -= 1
 
             if level.order_count < 0:
-                print(f"[Book {self.symbol}] Negative order_count={level.order_count}"
+                raise ValueError(f"[Book {self.symbol}] Negative order_count={level.order_count}"
                       f"price={order.price} after trading order id {order_id}")
 
             if level.order_count == 0:
                 if level.total_qty != 0:
-                    print(f"[Book {self.symbol}] order_count=0 but total_qty{level.total_qty}"
+                    raise ValueError(f"[Book {self.symbol}] order_count=0 but total_qty{level.total_qty}"
                                      f"at price={order.price}. INCONSISTENT STATE")
                 del levels[order.price]
 
     def modify_order(self, order_id: int, side: SIDE, qty: int, price: int) -> None:
-        # TODO -> error checking
         if order_id not in self.orders:
-            return
+            raise KeyError(f"[Book {self.symbol}] modify_order: order_id={order_id} not found")
 
         order = self.orders[order_id]
         symbol = order.symbol
@@ -144,7 +146,39 @@ class OrderBook:
 
     def validate(self):
         """add validation"""
-        pass
+        bb = self.get_best_bid()
+        ba = self.get_best_ask()
+
+        if bb is not None and ba is not None:
+            if bb[0] >= ba[0]:
+                raise ValueError(f"[Book {symbol}] best bid is greater than best ask")
+
+        for price, level in self.ask_levels.items():
+            if level.total_qty < 0:
+                raise ValueError(f"[Book {symbol}] qty={level.total_qty} qty <= 0")
+            if level.order_count < 0:
+                raise ValueError(f"[Book {symbol}] order_count={level.order_count} order_count <= 0")
+
+        for price, leve in self.bid_levels.items():
+            if level.total_qty < 0:
+                raise ValueError(f"[Book {symbol}] qty={level.total_qty} qty <= 0")
+            if level.order_count < 0:
+                raise ValueError(f"[Book {symbol}] order_count={level.order_count} order_count <= 0")
+
+        for oid, order in self.orders.items():
+            if order.side == SIDE.BUY:
+                if order.price not in self.bid_levels:
+                    raise ValueError(
+                        f"[BOOK {self.symbol}] Order {oid} at bid price={order.price} "
+                        f"but no corresponding bid level exists"
+                    )
+            else:
+                if order.price not in self.ask_levels:
+                    raise ValueError(
+                        f"[BOOK {self.symbol}] Order {oid} at ask price={order.price} "
+                        f"but no corresponding ask level exists"
+                    )
+
 
     def clear(self):
         """Error -> clear book"""
@@ -178,10 +212,7 @@ class OrderBookManager:
 
     def __init__(self):
         self.books: Dict[int, OrderBook] = {}
-        self.bbo_log: List[BBORecord] = []
         self.bbo_by_seq: Dict[int, BBORecord] = {}
-        self._total_volume: int = 0
-        self.cumulative_volume: Dict[int, int] = {}
 
     def get_or_create_book(self, symbol: int) -> OrderBook:
         if symbol not in self.books:
@@ -197,53 +228,33 @@ class OrderBookManager:
 
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
         book = self._find_book(order_id, "DELETE_ORDER", seq_num)
-        if not book:
-            print('need to sync')
-            return
         book.delete_order(order_id)
         self._log_bbo(book, seq_num)
 
     def process_trade(self, seq_num: int, order_id: int, qty: int, price: int) -> None:
         book = self._find_book(order_id, "TRADE", seq_num)
-        if not book:
-            print('need to sync')
-            return
         book.trade_order(order_id, qty, price)
         self._log_bbo(book, seq_num)
 
     def process_modify_order(self, seq_num: int, order_id: int, side: SIDE, qty: int, price: int) -> None:
         book = self._find_book(order_id, "MODIFY_ORDER", seq_num)
-        if not book:
-            print('need to sync')
-            return
         book.modify_order(order_id, side, qty, price)
         self._log_bbo(book, seq_num)
 
     def process_trade_summary(self, seq_num: int, symbol: int, aggressor: SIDE, total_qty: int, last_price: int) -> None:
-        # TODO: ASK about trade summary
         print(f"seq={seq_num}: TRADE Summary symbol={symbol}"
               f" aggressor={'BUY' if aggressor == SIDE.BUY else 'SELL'} "
               f"total_qty={total_qty} last_price={last_price}")
-
-    def process_heartbeat(self, seq_num: int) -> None:
-        print("heartbeat", end=" ")
-
-    def get_volume_in_range(self, seq_start: int, seq_end: int) -> int:
-        vol_end = self.cumulative_volume[seq_end]
-        vol_start = self.cumulative_volume[seq_start]
-        return vol_end - vol_start
 
     def _find_book(self, order_id: int, msg: str, seq_num: int) -> OrderBook:
         for symbol, book in self.books.items():
             if order_id in book.orders:
                 return book
 
-        #raise KeyError(
-        print(
+        raise KeyError(
             f"seq={seq_num}: {msg} references order_id={order_id}\n"
             f"This is not in the book. INCONSISTENT STATE"
         )
-        return None
 
     def _record_volume(self, seq_num: int) -> None:
         self.cumulative_volume[seq_num] = self._total_volume
@@ -260,18 +271,18 @@ class OrderBookManager:
             best_ask_price = best_ask[0] if best_ask else None,
             best_ask_qty = best_ask[1] if best_ask else None
         )
-        self.bbo_log.append(record)
         self.bbo_by_seq[seq_num] = record
-        print(f"seq={seq_num} sym={book.symbol}: BID={best_bid[0] if best_bid else '-'}x{best_bid[1] if best_bid else '-'} "
-              f"ASK={best_ask[0] if best_ask else '-'}x{best_ask[1] if best_ask else '-'}"
+        print(f"seq={seq_num} sym={book.symbol}: BID={best_bid[1] if best_bid else '-'}@{best_bid[0] if best_bid else '-'} "
+              f"ASK={best_ask[1] if best_ask else '-'}@{best_ask[0] if best_ask else '-'}"
               f" volume={book.total_volume}"
         )
 
 
 
 class SnapShotSynchronizer:
+    # TODO: Need to ensure last_seq_num < seq_num from last buffer -> continuing last snapshot
     def __init__(self, manager: OrderBookManager):
-        self.book_manager = manager
+        self.book_manager: OrderBookManager = manager
         self.sync: bool = False
         self.last_snap_seq_num: int = 0
         self.live_buffer: List[Tuple[MDHeader, any]] = []
@@ -284,10 +295,13 @@ class SnapShotSynchronizer:
         if header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
             symbol = body.symbol
             last_md_seq_num = body.last_md_seq_num
+            print(self.live_buffer)
 
-            if symbol in self.completed_symbols:
-                self.snap_complete = True
-                return
+            if self.live_buffer and self.live_buffer[0][0].seq_num < last_md_seq_num and symbol in self.completed_symbols:
+                    self.snap_complete = True
+                    return
+            elif symbol in self.completed_symbols:
+                self.completed_symbols.remove(symbol)
 
             bid_count = body.bid_count
             ask_count = body.ask_count
@@ -328,7 +342,11 @@ class SnapShotSynchronizer:
             state = self.snap_state[symbol]
 
             if state["orders_received"] == state["expected_total"]:
+                print(f"SNAP: Symbol {symbol} snapshot complete. "
+                    f"Received {state['orders_received']} orders "
+                    f"(bids={state['bid_count']}, asks={state['ask_count']})")
                 self.completed_symbols.add(symbol)
+                book.validate()
             # TODO: add some validation -> ensure book is consistent + log snap finished
         else:
             print(body)
@@ -402,8 +420,8 @@ def parse_live_message(header: MDHeader, body: any, manager: OrderBookManager) -
             last_price=body.last_price
         )
     elif header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
-        print("This should not print or be here header.msg_type -> snpashotinfo in parse_message")
+        raise KeyError("ashotinfo in parse_message")
     elif header.msg_type == MSG_TYPE.HEARTBEAT:
-        manager.process_heartbeat(seq_num=header.seq_num)
+        print(f"seq={header.seq_num}: HEARTBEAT")
 
 
