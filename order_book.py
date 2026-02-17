@@ -295,9 +295,8 @@ class SnapShotSynchronizer:
         if header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
             symbol = body.symbol
             last_md_seq_num = body.last_md_seq_num
-            print(self.live_buffer)
 
-            if self.live_buffer and self.live_buffer[0][0].seq_num < last_md_seq_num and symbol in self.completed_symbols:
+            if self.live_buffer and self.live_buffer[0][0].seq_num < self.last_snap_seq_num and symbol in self.completed_symbols:
                     self.snap_complete = True
                     return
             elif symbol in self.completed_symbols:
