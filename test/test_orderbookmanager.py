@@ -20,7 +20,7 @@ class TestOrderBookManager(unittest.TestCase):
     def test_initialization(self):
         """Test OrderBookManager initializes correctly"""
         self.assertEqual(len(self.manager.books), 0)
-        self.assertIsInstance(self.manager.bbo_log, list)
+        self.assertIsInstance(self.manager.bbo_by_seq, dict)
 
     def test_get_or_create_book_new_symbol(self):
         """Test creating a new book for a symbol"""
@@ -100,7 +100,8 @@ class TestOrderBookManager(unittest.TestCase):
     def test_process_delete_nonexistent_order(self):
         """Test deleting an order that doesn't exist in any book"""
         # Should print 'need to sync' but not crash
-        self.manager.process_delete_order(1, 999)
+        with self.assertRaises(KeyError):
+            self.manager.process_delete_order(1, 999)
 
     def test_process_delete_order_with_multiple_books(self):
         """Test deleting order when multiple books exist"""
@@ -132,7 +133,8 @@ class TestOrderBookManager(unittest.TestCase):
     def test_process_trade_nonexistent_order(self):
         """Test trading an order that doesn't exist"""
         # Should print 'need to sync' but not crash
-        self.manager.process_trade(1, 999, 50, 10000)
+        with self.assertRaises(KeyError):
+            self.manager.process_trade(1, 999, 50, 10000)
 
     def test_process_modify_order(self):
         """Test processing a modify order"""
@@ -146,12 +148,11 @@ class TestOrderBookManager(unittest.TestCase):
 
     def test_process_modify_nonexistent_order(self):
         """Test modifying an order that doesn't exist"""
-        # Should print 'need to sync' but not crash
-        self.manager.process_modify_order(1, 999, SIDE.BUY, 50, 10000)
+        with self.assertRaises(KeyError):
+            self.manager.process_modify_order(1, 999, SIDE.BUY, 50, 10000)
 
     def test_process_trade_summary(self):
         """Test processing a trade summary message"""
-        # This should just print information
         self.manager.process_trade_summary(
             seq_num=1,
             symbol=1,
@@ -159,7 +160,6 @@ class TestOrderBookManager(unittest.TestCase):
             total_qty=100,
             last_price=10000
         )
-        # No state change expected, just verify it doesn't crash
 
     def test_find_book_existing_order(self):
         """Test _find_book with an existing order"""
@@ -172,9 +172,8 @@ class TestOrderBookManager(unittest.TestCase):
 
     def test_find_book_nonexistent_order(self):
         """Test _find_book with a nonexistent order"""
-        book = self.manager._find_book(999, "TEST", 1)
-
-        self.assertIsNone(book)
+        with self.assertRaises(KeyError):
+            self.manager._find_book(999, "TEST", 1)
 
     def test_find_book_multiple_symbols(self):
         """Test _find_book correctly identifies the right book"""
@@ -275,7 +274,7 @@ class TestSequenceTracker(unittest.TestCase):
         self.tracker.check(1)
         self.tracker.check(2)
 
-        with self.assertRaises(KeyError) as context:
+        with self.assertRaises(ValueError) as context:
             self.tracker.check(4)  # Skip 3
 
         self.assertIn("Sequence Gap", str(context.exception))
@@ -286,21 +285,21 @@ class TestSequenceTracker(unittest.TestCase):
         """Test detection of large sequence gap"""
         self.tracker.check(1)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.tracker.check(100)
 
     def test_duplicate_sequence_number(self):
         """Test that duplicate sequence number is detected"""
         self.tracker.check(1)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.tracker.check(1)  # Duplicate
 
     def test_backward_sequence_number(self):
         """Test that backward sequence number is detected"""
         self.tracker.check(5)
 
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.tracker.check(3)  # Going backward
 
     def test_long_sequence(self):
@@ -314,10 +313,8 @@ class TestSequenceTracker(unittest.TestCase):
         """Test that tracker maintains state after gap detection"""
         self.tracker.check(1)
 
-        try:
+        with self.assertRaises(ValueError):
             self.tracker.check(3)  # Gap
-        except KeyError:
-            pass
 
         # Expected sequence should remain at 2 (not updated due to gap)
         self.assertEqual(self.tracker.expected_seq, 2)
@@ -359,7 +356,7 @@ class TestIntegration(unittest.TestCase):
         self.manager.process_new_order(2, 1001, 101, 1, SIDE.SELL, 30, 10100, 0)
 
         # Skip sequence 3
-        with self.assertRaises(KeyError):
+        with self.assertRaises(ValueError):
             self.tracker.check(4)
 
 

@@ -106,14 +106,14 @@ class TestOrderBook(unittest.TestCase):
     def test_add_order_zero_quantity(self):
         """Test adding order with zero quantity (should print warning)"""
         # This currently prints but doesn't raise - just verify it adds
-        self.book.add_order(100, 1, SIDE.BUY, 0, 10000, 1000)
-        self.assertIn(100, self.book.orders)
+        with self.assertRaises(ValueError):
+            self.book.add_order(100, 1, SIDE.BUY, 0, 10000, 1000)
 
     def test_add_order_negative_quantity(self):
         """Test adding order with negative quantity (should print warning)"""
         # This currently prints but doesn't raise - just verify it adds
-        self.book.add_order(100, 1, SIDE.BUY, -10, 10000, 1000)
-        self.assertIn(100, self.book.orders)
+        with self.assertRaises(ValueError):
+            self.book.add_order(100, 1, SIDE.BUY, -10, 10000, 1000)
 
     def test_delete_existing_order(self):
         """Test deleting an existing order"""
@@ -175,7 +175,9 @@ class TestOrderBook(unittest.TestCase):
     def test_trade_nonexistent_order(self):
         """Test trading an order that doesn't exist"""
         # Should not raise error, just return
-        self.book.trade_order(999, 50, 10000)
+
+        with self.assertRaises(KeyError):
+            self.book.trade_order(999, 50, 10000)
 
     def test_trade_multiple_partials_then_complete(self):
         """Test multiple partial trades followed by complete fill"""
@@ -247,8 +249,9 @@ class TestOrderBook(unittest.TestCase):
 
     def test_modify_nonexistent_order(self):
         """Test modifying an order that doesn't exist"""
-        # Should not raise error, just return
-        self.book.modify_order(999, SIDE.BUY, 50, 10000)
+
+        with self.assertRaises(KeyError):
+            self.book.modify_order(999, SIDE.BUY, 50, 10000)
 
     def test_modify_preserves_timestamp(self):
         """Test that modify preserves original timestamp"""

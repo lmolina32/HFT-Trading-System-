@@ -373,7 +373,7 @@ class SequenceTracker():
             self.expected_seq = seq_num + 1
             return
         if seq_num != self.expected_seq:
-            raise KeyError(f"Sequence Gap: expected seq={self.expected_seq}, got seq={seq_num}. NEED TO RESYNC")
+            raise ValueError(f"Sequence Gap: expected seq={self.expected_seq}, got seq={seq_num}. NEED TO RESYNC")
 
         self.expected_seq = seq_num + 1
 
