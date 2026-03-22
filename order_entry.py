@@ -4,7 +4,6 @@
 import logging
 import socket
 import struct
-import sys
 from order_entry_protocol import (
     OE_PROTOCOL_VERSION, MsgType, RejectReason, LoginStatus, OrderFlags, FillFlags, Side,
     OeRequestHeader, OeResponseHeader, Login, LoginResponse, NewOrder, DeleteOrder,
@@ -47,9 +46,7 @@ class OrderEntryClient:
         self.send(msg.pack())
         log.info("SEND LOGIN  username=%s  seq=%d", self.username, self.seqNum)
 
-        rawResp = self.receiveResponse()
-        resp = self.parse_response(rawResp)
-
+        resp = self.parse_response(self.receiveResponse())
         status = LoginStatus(resp.status)
         if status != LoginStatus.SUCCESS:
             self.handle_log_in_error(status)
@@ -97,39 +94,38 @@ class OrderEntryClient:
         self.seqNum += 1
         return self.seqNum
 
-    def recv_response(self, n):
-        buffer = b""
-        while len(buffer) < n:
-            packetChunk = self.socket.recv(n - len(buffer))
-            if not packetChunk:
-                raise ConnectionError("no more connection!!")
-            buffer += packetChunk
-        return buffer
-
     def receiveResponse(self):
-        buffer = self.recv_response(RESP_HDR_SIZE)
+        """Read one length-prefixed message, combining the old recv_response helper inline."""
+        def recv_exact(n):
+            buf = b""
+            while len(buf) < n:
+                chunk = self.socket.recv(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("no more connection!!")
+                buf += chunk
+            return buf
+
+        buffer = recv_exact(RESP_HDR_SIZE)
         totalLength = struct.unpack_from("<H", buffer, 0)[0]
         remaining = totalLength - RESP_HDR_SIZE
 
         if remaining < 0:
             raise ValueError("wack message length")
 
-        rawBody = self.recv_response(remaining) if remaining else b""
-        fullMsg = buffer + rawBody
+        fullMsg = buffer + (recv_exact(remaining) if remaining else b"")
         log.debug("RECV (%d bytes): %s", len(fullMsg), fullMsg.hex())
         return fullMsg
 
-    def sendAndRecv(self):
-        responses = []
+    def sendAndRecv(self, msg):
+        """Send a packed message then collect all responses."""
+        self.send(msg)
 
         # Block waiting for the first (mandatory) response
         self.socket.setblocking(True)
-        raw = self.receiveResponse()
-        resp = self.parse_response(raw)
-        responses.append(resp)
+        responses = [self.parse_response(self.receiveResponse())]
 
         # If first response is a reject or error, no more messages are coming
-        if isinstance(resp, (OrderReject, ErrorMessage)):
+        if isinstance(responses[0], (OrderReject, ErrorMessage)):
             return responses
 
         # Non-blocking drain for any additional messages (fills, closes, etc.)
@@ -137,9 +133,7 @@ class OrderEntryClient:
         try:
             while True:
                 try:
-                    raw = self.receiveResponse()
-                    resp = self.parse_response(raw)
-                    responses.append(resp)
+                    responses.append(self.parse_response(self.receiveResponse()))
                 except (BlockingIOError, socket.error):
                     break
         finally:
@@ -178,24 +172,19 @@ class OrderEntryClient:
             price=price,
             flags=int(flags),
         )
-        self.send(msg.pack())
         log.info("SEND NEW_ORDER  order_id=%d  symbol=%d  side=%s  qty=%d  price=%d  flags=%s",
                  orderId, symbol, Side(side).name, quantity, price, OrderFlags(flags).name)
-        responses = self.sendAndRecv()
+        responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
         return responses
-
-    def send_order(self, orderId, symbol, side, quantity, price, flags: OrderFlags = OrderFlags.NONE):
-        return self.new_order(orderId, symbol, side, quantity, price, flags)
 
     def delete_order(self, orderId):
         msg = DeleteOrder(
             header=self.makingRequestHeader(MsgType.DELETE_ORDER, DeleteOrder.SIZE),
             order_id=orderId,
         )
-        self.send(msg.pack())
         log.info("SEND DELETE_ORDER  order_id=%d", orderId)
-        responses = self.sendAndRecv()
+        responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
         return responses
 
@@ -207,10 +196,9 @@ class OrderEntryClient:
             quantity=quantity,
             price=price,
         )
-        self.send(msg.pack())
         log.info("SEND MODIFY_ORDER  order_id=%d  side=%s  qty=%d  price=%d",
                  orderId, Side(side).name, quantity, price)
-        responses = self.sendAndRecv()
+        responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
         return responses
 
@@ -235,9 +223,6 @@ def main():
 
         parts = line.split()
         cmd = parts[0].lower()
-        #print("heello")
-        #print(Side.BUY)
-        #print(Side.SELL)
 
         try:
             if cmd == "buy":
