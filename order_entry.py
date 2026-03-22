@@ -10,6 +10,9 @@ from order_entry_protocol import (
     ModifyOrder, OrderAck, OrderReject, OrderFill, OrderClosed, ErrorMessage,
 )
 
+from safety import positionTracker, exposureTracker, pnlTracker, riskTracker, cancelAllOrders
+
+
 logging.basicConfig(
     level=logging.DEBUG,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -25,7 +28,7 @@ RESP_HDR_SIZE = OeResponseHeader.SIZE
 
 
 class OrderEntryClient:
-    def __init__(self):
+    def __init__(self, order_manager=None):
         self.username = b"team2"
         self.password = b"92vM31Pa"
         self.clientId = 2
@@ -36,6 +39,16 @@ class OrderEntryClient:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect(("192.168.13.100", 1234))
         log.info("Connected to 192.168.13.100:1234")
+
+        self.positionTracker = positionTracker() # added during hw3, for position tracking
+        self.openOrders = {}
+
+        # adding to synchronize it all in main.py
+        self.pnlTracker = pnlTracker() # for pnl tracking
+        self.order_manager = order_manager
+
+        self.pnlMinVal = -10000 
+        self.positionLimit = 100 # change these as needed ^^ same w the error checking in safety.py
 
     def log_in(self):
         msg = Login(
@@ -95,7 +108,7 @@ class OrderEntryClient:
         return self.seqNum
 
     def receiveResponse(self):
-        """Read one length-prefixed message, combining the old recv_response helper inline."""
+        """Read one length-prefixed message."""
         def recv_exact(n):
             buf = b""
             while len(buf) < n:
@@ -143,7 +156,7 @@ class OrderEntryClient:
 
     def handle_order_error(self, resp):
         reason = RejectReason(resp.reject_reason)
-        log.error("order rejected </3:  order_id=%d  reason=%s", resp.order_id, reason.name)
+        log.error("order rejected </3:  order_id = %d  reason = %s", resp.order_id, reason.name)
 
     def handle_log_in_error(self, status):
         log.error("login failed </3:  status=%s", status.name)
@@ -155,14 +168,43 @@ class OrderEntryClient:
             elif isinstance(resp, OrderFill):
                 log.info("FILL order_id=%d qty=%d price=%d flags=%s",
                          resp.order_id, resp.quantity, resp.price, FillFlags(resp.flags).name)
+                
+                # for position tracking (symbol, buy qty, sellqty)
+                order =  self.openOrders.get(resp.order_id)
+                if order:
+                    symbol, side, qty = order
+                    if side == Side.BUY:
+                        self.positionTracker.updatePosition(symbol, resp.quantity, 0) # position tracking. (resp.quantity and not actual quantity in the case that it is a partial fill)
+                        self.pnlTracker.whenFillBuy(symbol, resp.quantity, resp.price) # pnl tracking
+                    else:
+                        self.positionTracker.updatePosition(symbol, 0, resp.quantity) # position
+                        self.pnlTracker.whenFillSell(symbol, resp.quantity, resp.price) # pnl
+
+                    if FillFlags(resp.flags) == FillFlags.CLOSED:
+                        self.openOrders.pop(resp.order_id, None) # remove order from openOrders dict when fully filled
+
+                    self.check(symbol) # the check
+
             elif isinstance(resp, OrderAck):
                 log.info("ACK order_id=%d exch_order_id=%d", resp.order_id, resp.exch_order_id)
             elif isinstance(resp, OrderClosed):
                 log.info("CLOSE order_id=%d", resp.order_id)
+                self.openOrders.pop(resp.order_id, None) # remove order from openOrders dict when deleted
+                ## adding this here for atomicity; removing only once exchange confirms that it is gone. otherwise in cancel order fnctn it u might have issues i think
             elif isinstance(resp, ErrorMessage):
                 log.error("ERROR code=%d msg=%s", resp.error_code, resp.error_message)
 
     def new_order(self, orderId, symbol, side, quantity, price, flags=OrderFlags.NONE):
+        valid, reason = riskTracker.isValid(orderId, symbol, side, quantity, price, self.openOrders, self.positionTracker, self.exposureTracker, self.respSeq)
+        if not valid:
+            log.error("order rejected by risk manager </3 nooo rip:  order_id = %d  reason = %s", orderId, reason)
+            return [OrderReject(
+                header=self.makingRequestHeader(MsgType.REJECT, OrderReject.SIZE),
+                order_id=orderId,
+                reject_reason=RejectReason.RISK_REJECT,
+            )]
+
+        
         msg = NewOrder(
             header=self.makingRequestHeader(MsgType.NEW_ORDER, NewOrder.SIZE),
             order_id=orderId,
@@ -174,6 +216,9 @@ class OrderEntryClient:
         )
         log.info("SEND NEW_ORDER  order_id=%d  symbol=%d  side=%s  qty=%d  price=%d  flags=%s",
                  orderId, symbol, Side(side).name, quantity, price, OrderFlags(flags).name)
+        # adding dict to keep track of positions for positionTracker in safety.py. bc otherwise we dk the positions during fills
+        self.openOrders[orderId] = (symbol, side, quantity) # orderId mapped to (symbol, side, quantity)
+
         responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
         return responses
@@ -186,6 +231,7 @@ class OrderEntryClient:
         log.info("SEND DELETE_ORDER  order_id=%d", orderId)
         responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
+    
         return responses
 
     def modify_order(self, orderId, side, quantity, price):
@@ -200,6 +246,11 @@ class OrderEntryClient:
                  orderId, Side(side).name, quantity, price)
         responses = self.sendAndRecv(msg.pack())
         self._log_responses(responses)
+
+        # updating the map if modify is successful (ie if we get an ack and not a reject)
+        if isinstance(responses[0], OrderAck) and responses[0].order_id in self.openOrders:
+            symbol, _, _ = self.openOrders.get(orderId)
+            self.openOrders[orderId] = (symbol, side, quantity) # update order in openOrders dict when modified successfully
         return responses
 
     def immediate_or_cancel(self, orderId, symbol, side, quantity, price):
@@ -208,12 +259,51 @@ class OrderEntryClient:
             quantity=quantity, price=price, flags=OrderFlags.IOC,
         )
 
+    # adding for pnl
+    def getCurrentMarket(self, symbol):
+        book = self.order_manager.books.get(symbol)
+        if book:
+            best_bid = book.get_best_bid()
+            best_ask = book.get_best_ask()
+            if best_bid and best_ask:
+                return (best_bid[0] + best_ask[0]) // 2  # mid price
+            elif best_bid:
+                return best_bid[0]
+            elif best_ask:
+                return best_ask[0]
+        return 0 # if dne yet
 
+    def getPnL(self, symbol):
+        position = self.positionTracker.symbolPosition.get(symbol, 0)
+        currentMarketPrice = self.getCurrentMarket(symbol)
+        return self.pnlTracker.getPnL(symbol, position, currentMarketPrice)
+
+    def cancelAllOrders(self):
+        for order in list(self.openOrders.keys()):
+            self.delete_order(order)
+
+    def check(self, symbol):
+        position = self.positionTracker.symbolPosition.get(symbol, 0)
+        pnl = self.getPnL(symbol)
+
+        if pnl is not None and pnl < self.pnlMinVal:
+            log.warning(f"PnL for symbol {symbol} is below threshold: {pnl}")
+            self.cancelAllOrders()
+            raise SystemExit(f"PnL limit breached for symbol {symbol}. Exiting...")
+        if position is not None and abs(position) > self.positionLimit:
+            log.warning(f"Position for symbol {symbol} is above limit: {position}")
+            self.cancelAllOrders()
+            raise SystemExit(f"Position limit breached for symbol {symbol}. Exiting...")
+
+
+'''
 def main():
     client = OrderEntryClient()
     client.log_in()
 
     while True:
+
+
         try:
             line = input("> ").strip()
         except EOFError:
@@ -252,3 +342,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+'''
