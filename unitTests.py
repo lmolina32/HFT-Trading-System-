@@ -20,7 +20,7 @@ def test_position_tracker():
 
     pt.updatePosition(1, 10, 0)
     run_test("buy increases position", pt.symbolPosition[1] == 10)
-
+ 
     pt2 = positionTracker()
     pt2.updatePosition(1, 0, 5)
     run_test("sell decreases position", pt2.symbolPosition[1] == -5)
