@@ -10,7 +10,7 @@ from order_entry_protocol import (
     ModifyOrder, OrderAck, OrderReject, OrderFill, OrderClosed, ErrorMessage,
 )
 
-from safety import positionTracker, exposureTracker, pnlTracker, riskTracker, cancelAllOrders
+from safety import positionTracker, exposureTracker, pnlTracker, riskTracker
 
 
 logging.basicConfig(
@@ -43,11 +43,14 @@ class OrderEntryClient:
         self.positionTracker = positionTracker() # added during hw3, for position tracking
         self.openOrders = {}
 
+        self.exposureTracker = exposureTracker() # for exposure tracking
+        self.riskTracker = riskTracker() 
+
         # adding to synchronize it all in main.py
         self.pnlTracker = pnlTracker() # for pnl tracking
         self.order_manager = order_manager
 
-        self.pnlMinVal = -10000 
+        self.pnlMinVal = -10000 # change as needed
         self.positionLimit = 100 # change these as needed ^^ same w the error checking in safety.py
 
     def log_in(self):
@@ -195,7 +198,8 @@ class OrderEntryClient:
                 log.error("ERROR code=%d msg=%s", resp.error_code, resp.error_message)
 
     def new_order(self, orderId, symbol, side, quantity, price, flags=OrderFlags.NONE):
-        valid, reason = riskTracker.isValid(orderId, symbol, side, quantity, price, self.openOrders, self.positionTracker, self.exposureTracker, self.respSeq)
+        valid, reason = self.riskTracker.isValid(symbol, side, quantity, price, self.openOrders, self.positionTracker, self.exposureTracker, self.respSeq)
+        
         if not valid:
             log.error("order rejected by risk manager </3 nooo rip:  order_id = %d  reason = %s", orderId, reason)
             return [OrderReject(
@@ -278,7 +282,7 @@ class OrderEntryClient:
         currentMarketPrice = self.getCurrentMarket(symbol)
         return self.pnlTracker.getPnL(symbol, position, currentMarketPrice)
 
-    def cancelAllOrders(self):
+    def cancelAllOrders(self): # he talked ab diff methods for this in class ??
         for order in list(self.openOrders.keys()):
             self.delete_order(order)
 

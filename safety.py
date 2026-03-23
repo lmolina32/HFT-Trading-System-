@@ -11,7 +11,7 @@ class positionTracker:
 
     def updatePosition(self, symbol, buy, sell):
         self.symbolPosition[symbol] = self.symbolPosition.get(symbol, 0) + buy - sell
-    
+
 
 class exposureTracker:
     def buyExposure(self, symbol, openOrders, position):
@@ -114,9 +114,6 @@ class riskTracker:
 
         return True, None
 
-def cancelAllOrders():
-    pass
 
 
 
-# havent touched bullet 6 and beyond...
