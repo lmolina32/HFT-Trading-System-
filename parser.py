@@ -2,17 +2,32 @@
 
 import sys
 import struct
-import heapq
-from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, List
-from market_data_struct import *
-from order_book import *
+from market_data_struct import (
+    MSG_TYPE,
+    MDHeader,
+    NewOrder,
+    DeleteOrder,
+    ModifyOrder,
+    Trade,
+    TradeSummary,
+    SnapshotInfo,
+    MAGIC_NUMBER,
+)
+from order_book import (
+    OrderBookManager,
+    SnapShotSynchronizer,
+    SequenceTracker,
+    parse_live_message,
+    trade_body,
+)
 
-def parse_message(data):
+
+def parse_message(data: bytes) -> trade_body:
     """Parse a binary message and return the appropriate message object"""
     if len(data) < MDHeader.STRUCT_SIZE:
-        print(f"Error: Data read in is less thatn {MDHeader.STRUCT_SIZE}, check multicast for errors")
-        return None
+        raise ValueError(
+            f"Data read in is less than {MDHeader.STRUCT_SIZE}, check multicast for errors"
+        )
 
     # Parse header to determine message type
     header = MDHeader(data)
@@ -31,28 +46,31 @@ def parse_message(data):
     elif header.msg_type == MSG_TYPE.SNAPSHOT_INFO:
         return SnapshotInfo(data)
     elif header.msg_type == MSG_TYPE.HEARTBEAT:
-        return {}
-    else:
-        print(f"{header.msg_type}")
         return header
+    raise ValueError(f"Unknown message type: {header.msg_type}")
+
 
 def main():
-    order_manager = OrderBookManager()
-    synchronizer = SnapShotSynchronizer(order_manager)
-    seq_tracker = SequenceTracker()
-    buffer = b''
+    order_manager: OrderBookManager = OrderBookManager()
+    seq_tracker: SequenceTracker = SequenceTracker()
+    synchronizer: SnapShotSynchronizer = SnapShotSynchronizer(
+        order_manager, seq_tracker
+    )
+    buffer: bytes = b""
 
     for line in sys.stdin:
         hex_line = line.rstrip()
         if hex_line.startswith(("Read", "Subscribed", "Listening")):
             continue
 
-        hexString = hex_line.replace(':', '')
+        hexString = hex_line.replace(":", "")
         data = bytes.fromhex(hexString)
         buffer += data
 
         while len(buffer) >= 23:
-            magic, length, seq_num, timestamp, msg_type = struct.unpack('<QHIQB', buffer[:23])
+            magic, length, seq_num, timestamp, msg_type = struct.unpack(
+                "<QHIQB", buffer[:23]
+            )
             header = MDHeader(buffer[:23])
             if len(buffer) < header.length:
                 break
@@ -90,7 +108,5 @@ def main():
                             print(f" {book}")
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
-

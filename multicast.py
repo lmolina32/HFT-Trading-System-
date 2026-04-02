@@ -5,7 +5,10 @@ import struct
 import sys
 import select
 
-def create_multicast_socket(mcast_addr, mcast_port, local_ip):
+
+def create_multicast_socket(
+    mcast_addr: str, mcast_port: int, local_ip: str
+) -> socket.socket:
     """
     Create and configure a multicast socket.
 
@@ -36,12 +39,11 @@ def create_multicast_socket(mcast_addr, mcast_port, local_ip):
     sock.bind((mcast_addr, mcast_port))
 
     # Join the multicast group
-    mreq = struct.pack('4s4s',
-                       socket.inet_aton(mcast_addr),
-                       socket.inet_aton(local_ip))
+    mreq = struct.pack("4s4s", socket.inet_aton(mcast_addr), socket.inet_aton(local_ip))
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
 
     return sock
+
 
 def main():
     if len(sys.argv) < 4 or (len(sys.argv) - 2) % 2 != 0:
@@ -94,9 +96,9 @@ def main():
                                 try:
                                     data = sock.recv(1500)
                                     if data:
-                                        #print(f"Read {len(data)} bytes")
+                                        # print(f"Read {len(data)} bytes")
                                         # Print hex dump
-                                        hex_str = ':'.join(f'{b:02x}' for b in data)
+                                        hex_str = ":".join(f"{b:02x}" for b in data)
                                         print(hex_str)
                                 except BlockingIOError:
                                     pass  # No data available
@@ -111,7 +113,7 @@ def main():
                         if data:
                             print(f"Read {len(data)} bytes")
                             # Print hex dump
-                            hex_str = ':'.join(f'{b:02x}' for b in data)
+                            hex_str = ":".join(f"{b:02x}" for b in data)
                             print(hex_str)
                     except BlockingIOError:
                         pass  # No data available
@@ -125,5 +127,6 @@ def main():
         for sock in mcast_sockets:
             sock.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

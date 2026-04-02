@@ -1,119 +1,196 @@
 #!/usr/bin/env python3
 
-import math
 import time
 from order_entry_protocol import Side
+from typing import Dict, Tuple, Optional
 
 
-class positionTracker:
+class PositionTracker:
+    """
+    Tracks net position per symbol: total_bought - total_sold. Updated on each fill from the exchange.
+    """
+
+    __slots__ = ("symbol_position",)
+
     def __init__(self):
-        self.symbolPosition = {}
+        self.symbol_position: Dict[int, int] = {}
 
-    def updatePosition(self, symbol, buy, sell):
-        self.symbolPosition[symbol] = self.symbolPosition.get(symbol, 0) + buy - sell
+    def update_position(self, symbol: int, buy_qty: int, sell_qty: int) -> None:
+        """Update symbols position by adding (buy quantity - sell quantity)"""
+        self.symbol_position[symbol] = (
+            self.symbol_position.get(symbol, 0) + buy_qty - sell_qty
+        )
+
+    def get_position(self, symbol: int) -> int:
+        """Return symbols current position, if not yet traded return 0"""
+        return self.symbol_position.get(symbol, 0)
 
 
-class exposureTracker:
-    def buyExposure(self, symbol, openOrders, position):
-        outstandingBuys = 0
-        for orderId, (sym, side, qty) in openOrders.items():
+class ExposureTracker:
+    """
+    Calculates worst-case scenario if all outstanding orders were filled
+
+    Buy Exposure = position + total outstanding buy order quantity
+    Sell Exposure = -position + total oustanding sell order quantity"""
+
+    __slots__ = ()
+
+    @staticmethod
+    def buy_exposure(
+        symbol: int, open_orders: Dict[int, Tuple[int, int, int]], position: int
+    ) -> int:
+        """Compute buy exposure for given symbol (position + total outstanding buy qty)"""
+        outstanding: int = 0
+        for sym, side, qty in open_orders.values():
             if sym == symbol and side == Side.BUY:
-                outstandingBuys += qty
-        return outstandingBuys + position
+                outstanding += qty
+        return position + outstanding
 
-    def sellExposure(self, symbol, openOrders, position):
-        outstandingSells = 0
-        for orderId, (sym, side, qty) in openOrders.items():
+    @staticmethod
+    def sell_exposure(
+        symbol: int, open_orders: Dict[int, Tuple[int, int, int]], position: int
+    ) -> int:
+        """Compute sell exposure for given symbol (-position + total outstanding sell qty)"""
+        outstanding: int = 0
+        for sym, side, qty in open_orders.values():
             if sym == symbol and side == Side.SELL:
-                outstandingSells += qty
-        return outstandingSells + position
+                outstanding += qty
+        return -position + outstanding
 
 
-class pnlTracker:
-    def __init__(self):
-        self.totalSells = {}
-        self.avgSellPrice = {}
-        self.totalBuys = {}
-        self.avgBuyPrice = {}
+class PnLTracker:
+    __slots__ = ("total_sells", "avg_sell_price", "total_buys", "avg_buy_price")
 
-    def whenFillBuy(self, symbol, quantity, price):
-        totalCost = self.avgBuyPrice.get(symbol, 0) * self.totalBuys.get(symbol, 0)
-        totalCost += quantity * price
-        self.totalBuys[symbol] = self.totalBuys.get(symbol, 0) + quantity
-        self.avgBuyPrice[symbol] = totalCost / self.totalBuys[symbol]
+    def __init__(self) -> None:
+        self.total_sells: Dict[int, int] = {}
+        self.avg_sell_price: Dict[int, float] = {}
+        self.total_buys: Dict[int, int] = {}
+        self.avg_buy_price: Dict[int, float] = {}
 
-    def whenFillSell(self, symbol, quantity, price):
-        totalRevenue = self.avgSellPrice.get(symbol, 0) * self.totalSells.get(symbol, 0)
-        totalRevenue += quantity * price
-        self.totalSells[symbol] = self.totalSells.get(symbol, 0) + quantity
-        self.avgSellPrice[symbol] = totalRevenue / self.totalSells[symbol]
-    
-    def getPnL(self, symbol, position, currentMarketPrice):
-        buyCost = self.avgBuyPrice.get(symbol, 0) * self.totalBuys.get(symbol, 0)
-        sellRevenue = self.avgSellPrice.get(symbol, 0) * self.totalSells.get(symbol, 0)
-        return sellRevenue - buyCost + (currentMarketPrice * position) # this is to make it tick to market?
+    def on_fill_buy(self, symbol: int, quantity: int, price: int) -> None:
+        """Updated weighted buy price on fill"""
+        prev_qty = self.total_buys.get(symbol, 0)
+        prev_cost = self.avg_buy_price.get(symbol, 0.0) * prev_qty
+        new_qty = prev_qty + quantity
+        self.total_buys[symbol] = new_qty
+        self.avg_buy_price[symbol] = (prev_cost + quantity * price) / new_qty
+
+    def on_fill_sell(self, symbol: int, quantity: int, price: int) -> None:
+        """Updated weighted sell price on fill"""
+        prev_qty = self.total_sells.get(symbol, 0)
+        prev_rev = self.avg_sell_price.get(symbol, 0.0) * prev_qty
+        new_qty = prev_qty + quantity
+        self.total_sells[symbol] = new_qty
+        self.avg_sell_price[symbol] = (prev_rev + quantity * price) / new_qty
+
+    def get_pnl(self, symbol: int, position: int, market_price: int) -> float:
+        buy_cost = self.avg_buy_price.get(symbol, 0.0) * self.total_buys.get(symbol, 0)
+        sell_revenue = self.avg_sell_price.get(symbol, 0.0) * self.total_sells.get(
+            symbol, 0
+        )
+        return sell_revenue - buy_cost + (market_price * position)
 
 
-class riskTracker:
-    def __init__(self):
-        self.maxQtyOrder = 1000
-        self.maxQtySide = 500
-        self.maxExposure = 1000
-        self.maxOrdersPerSecond = 10
-        self.maxPerSequence = 1000
-        self.maxUnackedOrders = 5
-        self.positionLimit = 1000
-        # anything else you can think of?
+class RiskTracker:
+    __slots__ = (
+        "max_qty_per_order",
+        "max_qty_per_side",
+        "max_exposure",
+        "max_orders_per_second",
+        "max_per_sequence",
+        "max_unacked_orders",
+        "position_limit",
+        "orders_this_second",
+        "last_second_time",
+        "orders_this_seq_num",
+        "last_seq_num",
+    )
 
-        # states for rate limiting ??
-        self.ordersThisSecond = 0
-        self.lastSecondTime = None
-        self.ordersThisSeqNum = 0
-        self.lastSeqNum = None
+    def __init__(self) -> None:
+        self.max_qty_per_order: int = 1000
+        self.max_qty_per_side: int = 500
+        self.max_exposure: int = 1000
+        self.max_orders_per_second: int = 10
+        self.max_per_sequence: int = 1000
+        self.max_unacked_orders: int = 5
+        self.position_limit: int = 1000
+        self.orders_this_second: int = 0
+        self.last_second_time: Optional[float] = None
+        self.orders_this_seq_num: int = 0
+        self.last_seq_num: Optional[int] = None
 
-    def isValid(self, symbol, side, quantity, price, openOrders, positionTracker, exposureTracker, currentSeqNum):
+    def isValid(
+        self,
+        symbol: int,
+        side: int,
+        quantity: int,
+        price: int,
+        open_orders: Dict[int, Tuple[int, int, int]],
+        position_tracker: PositionTracker,
+        exposure_tracker: ExposureTracker,
+        current_seq_num: int,
+    ) -> Tuple[bool, str]:
 
-        if quantity > self.maxQtyOrder:
-            return False, f"Order quantity {quantity} exceeds maximum allowed {self.maxQtyOrder}"
+        if quantity > self.max_qty_per_order:
+            return (
+                False,
+                f"Order quantity {quantity} exceeds maximum allowed {self.max_qty_per_order}",
+            )
 
-        if quantity > self.maxQtySide:
-            return False, f"Order quantity {quantity} exceeds maximum allowed per side {self.maxQtySide}"
+        if quantity > self.max_qty_per_side:
+            return (
+                False,
+                f"Order quantity {quantity} exceeds maximum allowed per side {self.max_qty_per_side}",
+            )
 
         if side == Side.BUY:
-            exposure = exposureTracker.buyExposure(symbol, openOrders, positionTracker.symbolPosition.get(symbol, 0))
+            exposure = exposure_tracker.buy_exposure(
+                symbol, open_orders, position_tracker.get_position(symbol)
+            )
         else:
-            exposure = exposureTracker.sellExposure(symbol, openOrders, positionTracker.symbolPosition.get(symbol, 0))
-        if exposure + quantity > self.maxExposure:
-            return False, f"Order would exceed maximum exposure of {self.maxExposure} for symbol {symbol}"
+            exposure = exposure_tracker.sell_exposure(
+                symbol, open_orders, position_tracker.get_position(symbol)
+            )
+        if exposure + quantity > self.max_exposure:
+            return (
+                False,
+                f"Order would exceed maximum exposure of {self.max_exposure} for symbol {symbol}",
+            )
 
-        if price <= 0: # is this invalid price? anything else?
+        if price <= 0:  # is this invalid price? anything else?
             return False, "Order price cannot be negative"
 
-        if abs(positionTracker.symbolPosition.get(symbol, 0)) >= self.positionLimit:
-            return False, f"Order would exceed position limit of {self.positionLimit} for symbol {symbol}"
+        if abs(position_tracker.get_position(symbol)) >= self.position_limit:
+            return (
+                False,
+                f"Order would exceed position limit of {self.position_limit} for symbol {symbol}",
+            )
 
+        current_time: float = time.time()
+        if self.last_second_time is None or current_time - self.last_second_time >= 1:
+            self.orders_this_second = 0  # reset counter if a second has passed
+            self.last_second_time = current_time  # update last 'tracked' second to rn
+        self.orders_this_second += 1
+        if self.orders_this_second > self.max_orders_per_second:
+            return (
+                False,
+                f"exceeded maximum orders per second {self.max_orders_per_second}",
+            )
 
-        rn = time.time()
-        if self.lastSecondTime is None or rn - self.lastSecondTime >= 1:
-            self.ordersThisSecond = 0 # reset counter if a second has passed
-            self.lastSecondTime = rn # update last 'tracked' second to rn
-        self.ordersThisSecond += 1
-        if self.ordersThisSecond > self.maxOrdersPerSecond:
-            return False, f"exceeded maximum orders per second {self.maxOrdersPerSecond}"
+        if current_seq_num != self.last_seq_num:
+            self.orders_this_seq_num = 0
+            self.last_seq_num = current_seq_num
+        self.orders_this_seq_num += 1
+        if self.orders_this_seq_num > self.max_per_sequence:
+            return (
+                False,
+                f"Order quantity {quantity} exceeds maximum per sequence {self.max_per_sequence}",
+            )
 
+        if len(open_orders) >= self.max_unacked_orders:
+            return (
+                False,
+                f"Number of unacknowledged orders {len(open_orders)} exceeds maximum allowed {self.max_unacked_orders}",
+            )
 
-        if currentSeqNum != self.lastSeqNum:
-            self.ordersThisSeqNum = 0 # reset counter if it is a new sequence number
-            self.lastSeqNum = currentSeqNum # update last sequence number to this current one
-        self.ordersThisSeqNum += 1
-        if self.ordersThisSeqNum > self.maxPerSequence:
-            return False, f"Order quantity {quantity} exceeds maximum per sequence {self.maxPerSequence}"
-
-        if len(openOrders) >= self.maxUnackedOrders:
-            return False, f"Number of unacknowledged orders {len(openOrders)} exceeds maximum allowed {self.maxUnackedOrders}"
-
-        return True, None
-
-
-
-
+        return True, ""
