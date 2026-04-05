@@ -7,8 +7,8 @@ import os
 # Add parent directory to path to import the modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from order_book import OrderBook
-from market_data_struct import SIDE
+from src.order_book import OrderBook
+from src.market_data_struct import SIDE
 
 
 class TestOrderBook(unittest.TestCase):
@@ -29,12 +29,7 @@ class TestOrderBook(unittest.TestCase):
     def test_add_single_buy_order(self):
         """Test adding a single buy order"""
         self.book.add_order(
-            order_id=100,
-            symbol=1,
-            side=SIDE.BUY,
-            qty=50,
-            price=10000,
-            timestamp=1000
+            order_id=100, symbol=1, side=SIDE.BUY, qty=50, price=10000, timestamp=1000
         )
 
         self.assertEqual(len(self.book.orders), 1)
@@ -50,12 +45,7 @@ class TestOrderBook(unittest.TestCase):
     def test_add_single_sell_order(self):
         """Test adding a single sell order"""
         self.book.add_order(
-            order_id=200,
-            symbol=1,
-            side=SIDE.SELL,
-            qty=30,
-            price=10100,
-            timestamp=2000
+            order_id=200, symbol=1, side=SIDE.SELL, qty=30, price=10100, timestamp=2000
         )
 
         self.assertEqual(len(self.book.orders), 1)
@@ -314,5 +304,5 @@ class TestOrderBook(unittest.TestCase):
         self.assertEqual(len(self.book.bid_levels), 1)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

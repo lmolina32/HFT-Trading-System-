@@ -4,11 +4,10 @@ import unittest
 import sys
 import os
 
-# Add parent directory to path to import the modules
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from order_book import OrderBookManager, SequenceTracker
-from market_data_struct import SIDE
+from src.order_book import OrderBookManager, SequenceTracker
+from src.market_data_struct import SIDE
 
 
 class TestOrderBookManager(unittest.TestCase):
@@ -62,7 +61,7 @@ class TestOrderBookManager(unittest.TestCase):
             side=SIDE.BUY,
             qty=50,
             price=10000,
-            flags=0
+            flags=0,
         )
 
         self.assertIn(1, self.manager.books)
@@ -154,11 +153,7 @@ class TestOrderBookManager(unittest.TestCase):
     def test_process_trade_summary(self):
         """Test processing a trade summary message"""
         self.manager.process_trade_summary(
-            seq_num=1,
-            symbol=1,
-            aggressor=SIDE.BUY,
-            total_qty=100,
-            last_price=10000
+            seq_num=1, symbol=1, aggressor=SIDE.BUY, total_qty=100, last_price=10000
         )
 
     def test_find_book_existing_order(self):
@@ -228,8 +223,7 @@ class TestOrderBookManager(unittest.TestCase):
         # Create orders on multiple symbols
         for symbol in range(1, 6):
             self.manager.process_new_order(
-                symbol, 1000 + symbol, 100 + symbol, symbol,
-                SIDE.BUY, 50, 10000, 0
+                symbol, 1000 + symbol, 100 + symbol, symbol, SIDE.BUY, 50, 10000, 0
             )
 
         self.assertEqual(len(self.manager.books), 5)
@@ -331,10 +325,23 @@ class TestIntegration(unittest.TestCase):
     def test_ordered_message_sequence(self):
         """Test processing ordered sequence of messages"""
         messages = [
-            (1, lambda: self.manager.process_new_order(1, 1000, 100, 1, SIDE.BUY, 50, 10000, 0)),
-            (2, lambda: self.manager.process_new_order(2, 1001, 101, 1, SIDE.SELL, 30, 10100, 0)),
+            (
+                1,
+                lambda: self.manager.process_new_order(
+                    1, 1000, 100, 1, SIDE.BUY, 50, 10000, 0
+                ),
+            ),
+            (
+                2,
+                lambda: self.manager.process_new_order(
+                    2, 1001, 101, 1, SIDE.SELL, 30, 10100, 0
+                ),
+            ),
             (3, lambda: self.manager.process_trade(3, 100, 20, 10000)),
-            (4, lambda: self.manager.process_modify_order(4, 101, SIDE.SELL, 40, 10150)),
+            (
+                4,
+                lambda: self.manager.process_modify_order(4, 101, SIDE.SELL, 40, 10150),
+            ),
             (5, lambda: self.manager.process_delete_order(5, 100)),
         ]
 
@@ -360,5 +367,5 @@ class TestIntegration(unittest.TestCase):
             self.tracker.check(4)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()
