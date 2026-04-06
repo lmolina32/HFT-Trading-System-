@@ -30,5 +30,5 @@ bminor/
 │   ├── parser.py               # functions to parse market data 
 │   ├── safety.py               # risk system to ensure all trades are valid 
 │   └── strategy/               # trading strategy 
-└── test/               # Test cases organized by phase
+└── test/                       # Test cases organized by phase
 ```
