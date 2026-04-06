@@ -33,15 +33,6 @@ from .order_entry_protocol import (
 from .safety import PositionTracker, ExposureTracker, PnLTracker, RiskTracker
 
 
-# logging.basicConfig(
-#     level=logging.DEBUG,
-#     format="%(asctime)s  %(levelname)-8s  %(message)s",
-#     handlers=[
-#         logging.StreamHandler(),
-#         logging.FileHandler("order_entry.log"),
-#     ],
-# )
-
 log: logging.Logger = logging.getLogger("order_entry")
 
 

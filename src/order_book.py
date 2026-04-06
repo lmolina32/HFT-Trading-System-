@@ -6,6 +6,7 @@ import heapq
 import logging
 from typing import Dict, Optional, Tuple, List, TypeAlias
 from .market_data_struct import (
+    MarketDataMessage,
     MSG_TYPE,
     SIDE,
     MDHeader,
@@ -20,27 +21,7 @@ from .market_data_struct import (
     Order,
 )
 
-# logging.basicConfig(
-#     level=logging.INFO,
-#     format="%(asctime)s [%(levelname)s] %(message)s",
-#     datefmt="%H:%M:%S",
-# )
 log: logging.Logger = logging.getLogger("order_book")
-# console_handler = logging.StreamHandler()
-# file_handler = logging.FileHandler("trade_engine.log")
-# log.addHandler(console_handler)
-# log.addHandler(file_handler)
-
-
-trade_body: TypeAlias = (
-    NewOrder
-    | DeleteOrder
-    | ModifyOrder
-    | Trade
-    | TradeSummary
-    | SnapshotInfo
-    | MDHeader
-)
 
 
 class OrderBook:
@@ -408,12 +389,14 @@ class SnapShotSynchronizer:
         self.seq_tracker: SequenceTracker = seq_tracker
         self.sync: bool = False
         self.last_snap_seq_num: int = 0
-        self.live_buffer: List[Tuple[MDHeader, trade_body]] = []
+        self.live_buffer: List[Tuple[MDHeader, MarketDataMessage]] = []
         self.snap_state: Dict[int, Dict[str, int]] = {}
         self.snap_complete: bool = False
         self.completed_symbols: set[int] = set()
 
-    def handle_snapshot_message(self, header: MDHeader, body: trade_body) -> None:
+    def handle_snapshot_message(
+        self, header: MDHeader, body: MarketDataMessage
+    ) -> None:
         if header.msg_type == MSG_TYPE.SNAPSHOT_INFO and isinstance(body, SnapshotInfo):
             self._handle_snapshot_info(body)
 
@@ -424,7 +407,7 @@ class SnapShotSynchronizer:
                 f"SNAP: Unexpected msg_type={header.msg_type} on snapshot channel"
             )
 
-    def buffer_live_message(self, header: MDHeader, body: trade_body) -> None:
+    def buffer_live_message(self, header: MDHeader, body: MarketDataMessage) -> None:
         self.live_buffer.append((header, body))
 
     def replay_buffered_messages(self) -> None:
@@ -525,7 +508,7 @@ class SnapShotSynchronizer:
 
 
 def dispatch_live_message(
-    header: MDHeader, body: trade_body, manager: OrderBookManager
+    header: MDHeader, body: MarketDataMessage, manager: OrderBookManager
 ) -> None:
     if header.msg_type == MSG_TYPE.NEW_ORDER and isinstance(body, NewOrder):
         manager.process_new_order(
