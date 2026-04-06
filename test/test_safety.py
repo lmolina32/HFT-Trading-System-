@@ -155,8 +155,8 @@ def test_risk_tracker():
 
     rt2, pt2, et2 = make()
     ok2, _ = check(
-        rt2, pt2, et2, quantity=rt2.max_qty_per_side
-    )  # use max_qty_per_side since it's the lower limit
+        rt2, pt2, et2, quantity=rt2.max_qty_per_order
+    )  # at exactly the per-order limit
     run_test("a) at max qty per order is accepted", ok2)
 
     # b) max qty per side
@@ -203,7 +203,7 @@ def test_risk_tracker():
     ok, _ = check(rt, pt, et)
     run_test("f) exceeds orders per second is rejected", not ok)
     rt.last_second_time = time.time() - 2  # force reset
-    ok2, _ = check(rt, pt, et)
+    ok2, _ = check(rt, pt, et, seqNum=999)  # fresh seqNum so per-seq counter also resets
     run_test("f) counter resets after 1 second", ok2)
 
     # g) orders per seq num
