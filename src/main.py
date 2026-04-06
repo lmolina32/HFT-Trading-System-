@@ -25,7 +25,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[
         # logging.StreamHandler(),
-        logging.FileHandler("trade_engine1.log"),
+        logging.FileHandler("trade_engine.log"),
     ],
 )
 log = logging.getLogger("main")
@@ -137,18 +137,19 @@ def run_market_data(
                             pass  # No data available
                         break
         else:
-            readable, _, _ = select.select(sockets, [], [], 0)
-            for sock in readable:
-                try:
-                    data = sock.recv(MAX_UDP_PAYLOAD)
-                    if data:
-                        clean_data = "".join(f"{b:02x}" for b in data).rstrip()
-                        data_buffer += bytes.fromhex(clean_data)
-                        data_buffer = _process_buffer(
-                            data_buffer, manager, seq_tracker, synchronizer
-                        )
-                except BlockingIOError:
-                    pass  # No data available
+            while True:
+                readable, _, _ = select.select(sockets, [], [], 0)
+                for sock in readable:
+                    try:
+                        data = sock.recv(MAX_UDP_PAYLOAD)
+                        if data:
+                            clean_data = "".join(f"{b:02x}" for b in data).rstrip()
+                            data_buffer += bytes.fromhex(clean_data)
+                            data_buffer = _process_buffer(
+                                data_buffer, manager, seq_tracker, synchronizer
+                            )
+                    except BlockingIOError:
+                        pass  # No data available
     except KeyboardInterrupt:
         log.info("\nShutting down")
     finally:
@@ -159,6 +160,19 @@ def run_market_data(
 
 
 def run_order_entry_cli(client: OrderEntryClient) -> None:
+    """Interactive CLI for manual order entry.
+
+    Commands:
+        buy  <oid> <sym> <qty> <price>
+        sell <oid> <sym> <qty> <price>
+        del  <oid>
+        mod  <oid> <side> <qty> <price>
+        ioc  <oid> <sym> <side> <qty> <price>
+        pnl  <sym>
+        pos  <sym>
+        cancel
+        quit
+    """
     client.login()
 
     while True:
@@ -233,6 +247,7 @@ def main() -> None:
     except SystemExit as e:
         log.error("Emergency shutdown: %s", e)
     finally:
+        log.error("\n\nShutting down all orders")
         client.shutdown()
 
 

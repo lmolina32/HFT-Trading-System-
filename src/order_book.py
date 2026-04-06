@@ -20,16 +20,16 @@ from .market_data_struct import (
     Order,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-log: logging.Logger = logging.getLogger("market_data")
-console_handler = logging.StreamHandler()
-file_handler = logging.FileHandler("trade_engine.log")
-log.addHandler(console_handler)
-log.addHandler(file_handler)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="%(asctime)s [%(levelname)s] %(message)s",
+#     datefmt="%H:%M:%S",
+# )
+log: logging.Logger = logging.getLogger("order_book")
+# console_handler = logging.StreamHandler()
+# file_handler = logging.FileHandler("trade_engine.log")
+# log.addHandler(console_handler)
+# log.addHandler(file_handler)
 
 
 trade_body: TypeAlias = (

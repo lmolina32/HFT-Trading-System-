@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import socket
 import struct
-import sys
-import select
 
 
 def create_multicast_socket(

@@ -42,7 +42,7 @@ from .safety import PositionTracker, ExposureTracker, PnLTracker, RiskTracker
 #     ],
 # )
 
-log: logging.Logger = logging.getLogger(__name__)
+log: logging.Logger = logging.getLogger("order_entry")
 
 
 RESP_HDR_SIZE = OeResponseHeader.SIZE
