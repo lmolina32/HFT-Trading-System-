@@ -9,7 +9,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, TypeAlias, Tuple
 
 OE_PROTOCOL_VERSION: int = 1
 
@@ -452,3 +452,5 @@ OeResponse: TypeAlias = (
     | ErrorMessage
     | OeResponseHeader
 )
+
+OeConfig: TypeAlias = Tuple[int, int, int, int, int]  # symbol, side, qty, prc, filled

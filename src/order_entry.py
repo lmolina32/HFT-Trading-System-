@@ -29,11 +29,18 @@ from .order_entry_protocol import (
     OrderClosed,
     ErrorMessage,
     OeResponse,
+    OeConfig,
 )
 from .safety import PositionTracker, ExposureTracker, PnLTracker, RiskTracker
 
 
 log: logging.Logger = logging.getLogger("order_entry")
+order_handler = logging.FileHandler("order_entry.log")
+order_handler.setLevel(logging.INFO)
+if not log.handlers:
+    log.addHandler(order_handler)
+log.propagate = False
+log.info("This goes to order_entry.log (and maybe app.log)")
 
 
 RESP_HDR_SIZE = OeResponseHeader.SIZE
@@ -105,7 +112,7 @@ class OrderEntryClient:
 
         # Tracking & Risk
         self.position_tracker: PositionTracker = PositionTracker()
-        self.open_orders: dict[int, tuple[int, int, int]] = {}
+        self.open_orders: dict[int, OeConfig] = {}
         self.exposure_tracker: ExposureTracker = ExposureTracker()
         self.risk_tracker: RiskTracker = RiskTracker()
         self.pnl_tracker: PnLTracker = PnLTracker()
@@ -182,6 +189,7 @@ class OrderEntryClient:
             Unpacked struct that matches MsgType
         """
         hdr = OeResponseHeader.unpack(data)
+        self._validate_response_header(hdr)
         self.resp_seq = hdr.seq_num
         msg_type = MsgType(hdr.msg_type)
         log.info("RECV %s  seq=%d", msg_type.name, hdr.seq_num)
@@ -289,6 +297,15 @@ class OrderEntryClient:
                     resp.order_id,
                     reason.name,
                 )
+                if reason == RejectReason.UNKNOWN_ORDER_ID:
+                    self.open_orders.pop(resp.order_id, None)
+                # TODO: should we fail on all other reasons for rejected, this would indicate we have a bad trading system so I think we should
+                else:
+                    raise KeyError(
+                        "ORDER REJECTED order_id=%d reason=%s",
+                        resp.order_id,
+                        reason.name,
+                    )
             elif isinstance(resp, OrderFill):
                 log.info(
                     "FILL order_id=%d qty=%d price=%d flags=%s",
@@ -301,7 +318,8 @@ class OrderEntryClient:
                 # for position tracking (symbol, buy qty, sellqty)
                 order_info = self.open_orders.get(resp.order_id)
                 if order_info is not None:
-                    symbol, side, _ = order_info
+                    symbol, side, qty, prc, filled = order_info
+                    new_filled = filled + resp.quantity
                     if side == Side.BUY:
                         self.position_tracker.update_position(symbol, resp.quantity, 0)
                         self.pnl_tracker.on_fill_buy(symbol, resp.quantity, resp.price)
@@ -311,6 +329,14 @@ class OrderEntryClient:
 
                     if FillFlags(resp.flags) == FillFlags.CLOSED:
                         self.open_orders.pop(resp.order_id, None)
+                    else:
+                        self.open_orders[resp.order_id] = (
+                            symbol,
+                            side,
+                            qty,
+                            prc,
+                            new_filled,
+                        )
 
                     self._check_limits(symbol)
 
@@ -326,6 +352,7 @@ class OrderEntryClient:
                 self.open_orders.pop(resp.order_id, None)
             elif isinstance(resp, ErrorMessage):
                 log.error("ERROR code=%d msg=%s", resp.error_code, resp.error_message)
+                # TODO: should we raise a keyError here?
 
     def new_order(
         self,
@@ -337,6 +364,26 @@ class OrderEntryClient:
         flags: int = OrderFlags.NONE,
     ) -> List[OeResponse]:
         """Submit a new order after passing risk checks"""
+        if order_id in self.open_orders:
+            log.error(
+                "DUPLICATE order_id=%d already open - rejecting locally", order_id
+            )
+            return [
+                OrderReject(
+                    header=OeResponseHeader(
+                        OrderReject.SIZE,
+                        int(MsgType.REJECT),
+                        OE_PROTOCOL_VERSION,
+                        0,
+                        self.seq_num,
+                        self.client_id,
+                    ),
+                    order_id=order_id,
+                    reject_reason=RejectReason.DUPLICATE_ORDER_ID,
+                )
+            ]
+
+        # pre-trade risk check
         valid, reason = self.risk_tracker.is_valid(
             symbol,
             side,
@@ -393,7 +440,9 @@ class OrderEntryClient:
             symbol,
             side,
             quantity,
-        )  # orderId mapped to (symbol, side, quantity)
+            price,
+            0,
+        )  # orderId mapped to (symbol, side, quantity, filled)
 
         responses = self._send_and_recv(msg.pack())
         self._process_responses(responses)
@@ -414,6 +463,24 @@ class OrderEntryClient:
         self, order_id: int, side: int, quantity: int, price: int
     ) -> list[OeResponse]:
         """Modify an existing order's side, qty, and price"""
+
+        if order_id not in self.open_orders:
+            log.error("MODIFY for unknown local order_id=%d", order_id)
+            return [
+                OrderReject(
+                    header=OeResponseHeader(
+                        OrderReject.SIZE,
+                        int(MsgType.REJECT),
+                        OE_PROTOCOL_VERSION,
+                        0,
+                        self.seq_num,
+                        self.client_id,
+                    ),
+                    order_id=order_id,
+                    reject_reason=RejectReason.UNKNOWN_ORDER_ID,
+                )
+            ]
+
         msg = ModifyOrder(
             header=self._make_header(MsgType.MODIFY_ORDER, ModifyOrder.SIZE),
             order_id=order_id,
@@ -431,18 +498,32 @@ class OrderEntryClient:
         responses = self._send_and_recv(msg.pack())
         self._process_responses(responses)
 
+        if not responses:
+            log.error("MODIFY oid=%d: no response received", order_id)
+            return responses
+
+        first = responses[0]
         # updating the map if modify is successful
-        if (
-            responses
-            and isinstance(responses[0], OrderAck)
-            and order_id in self.open_orders
-        ):
-            symbol, _, _ = self.open_orders[order_id]
-            self.open_orders[order_id] = (
-                symbol,
-                side,
-                quantity,
+        if isinstance(first, OrderAck) and order_id in self.open_orders:
+            symbol, _, _, _, filled = self.open_orders[order_id]
+            self.open_orders[order_id] = (symbol, side, quantity, price, filled)
+
+        elif isinstance(first, OrderClosed):
+            log.warning(
+                "MODIFY oid=%d: received OrderClosed instead of OrderAck -> order ack partially filled beyond modify qty. Order is Now closed",
+                order_id,
             )
+            self.open_orders.pop(order_id, None)
+
+        elif isinstance(first, OrderReject):
+            reason = RejectReason(first.reject_reason)
+            if reason == RejectReason.UNKNOWN_ORDER_ID:
+                log.warning(
+                    "MODIFY oid=%d: UNKNOWN ORDER ID -> order was fully filled before the modify reached the exchange, clean up open orders"
+                )
+                self.open_orders.pop(order_id, None)
+            else:
+                log.error("MODIFY oid=%d rejected: reason = %s", order_id, reason.name)
         return responses
 
     def immediate_or_cancel(
@@ -457,6 +538,21 @@ class OrderEntryClient:
             price=price,
             flags=OrderFlags.IOC,
         )
+
+    def _validate_response_header(self, hdr: OeResponseHeader) -> None:
+        """Validate version, sequence monotonicity, and client_id on every response"""
+        if hdr.version != OE_PROTOCOL_VERSION:
+            raise ValueError(
+                f"Response version mismatch: got={hdr.version} expected={OE_PROTOCOL_VERSION}"
+            )
+        if hdr.client_id != self.client_id:
+            raise ValueError(
+                f"Response client_id mismatch: got={hdr.client_id} expected={self.client_id}"
+            )
+        if self.resp_seq != 0 and hdr.seq_num <= self.resp_seq:
+            raise ValueError(
+                f"Response seq_num not monotonic: got={hdr.seq_num} last={self.resp_seq}"
+            )
 
     def get_mid_price(self, symbol: int) -> int:
         """Reutrn current mid price form the order book, 0 if unavailable"""
@@ -480,9 +576,14 @@ class OrderEntryClient:
 
     def cancel_all_orders(self) -> None:
         """Cancel every locally tracked open order"""
+        log.info("Canceling all open orders")
         for order_id in list(self.open_orders.keys()):
             try:
+                log.info(
+                    f"Attempting to delete order_id={order_id} {self.open_orders[order_id]}"
+                )
                 self.delete_order(order_id)
+                log.info("Deleted order_id=%d", order_id)
             except Exception as e:
                 log.error("Failed to cancelt oid=%d: %s", order_id, e)
 

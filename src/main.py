@@ -105,6 +105,7 @@ def run_market_data(
         for sock in sockets:
             poller.register(sock.fileno(), select.EPOLLIN)
     except AttributeError:
+        poller = None
         use_poll = False
         log.info("epoll not available, using select()")
 
@@ -170,6 +171,7 @@ def run_order_entry_cli(client: OrderEntryClient) -> None:
         ioc  <oid> <sym> <side> <qty> <price>
         pnl  <sym>
         pos  <sym>
+        all
         cancel
         quit
     """
@@ -214,6 +216,8 @@ def run_order_entry_cli(client: OrderEntryClient) -> None:
                 )
             elif cmd == "cancel":
                 client.cancel_all_orders()
+            elif cmd == "all":
+                print(client.open_orders)
             elif cmd == "quit":
                 break
             else:

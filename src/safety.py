@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import time
-from .order_entry_protocol import Side
+from .order_entry_protocol import Side, OeConfig
 from typing import Dict, Tuple, Optional
 
 
@@ -38,22 +38,22 @@ class ExposureTracker:
 
     @staticmethod
     def buy_exposure(
-        symbol: int, open_orders: Dict[int, Tuple[int, int, int]], position: int
+        symbol: int, open_orders: Dict[int, OeConfig], position: int
     ) -> int:
         """Compute buy exposure for given symbol (position + total outstanding buy qty)"""
         outstanding: int = 0
-        for sym, side, qty in open_orders.values():
+        for sym, side, qty, prc, filled in open_orders.values():
             if sym == symbol and side == Side.BUY:
                 outstanding += qty
         return position + outstanding
 
     @staticmethod
     def sell_exposure(
-        symbol: int, open_orders: Dict[int, Tuple[int, int, int]], position: int
+        symbol: int, open_orders: Dict[int, OeConfig], position: int
     ) -> int:
         """Compute sell exposure for given symbol (-position + total outstanding sell qty)"""
         outstanding: int = 0
-        for sym, side, qty in open_orders.values():
+        for sym, side, qty, prc, filled in open_orders.values():
             if sym == symbol and side == Side.SELL:
                 outstanding += qty
         return -position + outstanding
@@ -135,7 +135,7 @@ class RiskTracker:
         side: int,
         quantity: int,
         price: int,
-        open_orders: Dict[int, Tuple[int, int, int]],
+        open_orders: Dict[int, OeConfig],
         position_tracker: PositionTracker,
         exposure_tracker: ExposureTracker,
         current_seq_num: int,
