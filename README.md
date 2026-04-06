@@ -3,50 +3,32 @@
 ## Usage (run in base directory)
 ```bash
 onload taskset -c 6 python3 -m src.main <ifconfig addresses> 
+
+Commands:
+    buy  <oid> <sym> <qty> <price>
+    sell <oid> <sym> <qty> <price>
+    del  <oid>
+    mod  <oid> <side> <qty> <price>
+    ioc  <oid> <sym> <side> <qty> <price>
+    pnl  <sym>
+    pos  <sym>
+    cancel
+    quit
 ```
+Note: symbol 1 -> gold, 2 -> blue
 
-
-
-```
-./order_entry.py
-....
-> buy/sell     order_id        gold/blue (gold = 1, blue = 2)      quantity price
-
-EXAMPLE:
-....
-> buy 1 1 5 500
-First order (aka order_id of 1), buy 5 qts of gold for 500
-```
-
-
-
-```
-./order_entry.py
-....
-> buy/sell     order_id        gold/blue (gold = 1, blue = 2)      quantity price
-
-EXAMPLE:
-....
-> buy 1 1 5 500
-First order (aka order_id of 1), buy 5 qts of gold for 500
-```
+## Project Structure
 
 ```
-./order_entry.py
-....
-> buy/sell     order_id        gold/blue (gold = 1, blue = 2)      quantity price
-
-EXAMPLE:
-....
-> buy 1 1 5 500
-First order (aka order_id of 1), buy 5 qts of gold for 500
+bminor/
+├── src/
+│   ├── main.py                 # main entry point for market data and order entry
+│   ├── market_data_struct.py   # order book protocols 
+│   ├── multicast.py            # multicast listener for market data 
+│   ├── order_book.py           # classes to create and manage order book 
+│   ├── order_entry.py          # class to create and manage order entries 
+│   ├── parser.py               # functions to parse market data 
+│   ├── safety.py               # risk system to ensure all trades are valid 
+│   └── strategy/               # trading strategy 
+└── test/               # Test cases organized by phase
 ```
-
-## General Flow ?
-- multicast.py -> subscribes to multicast groups, receives UDP packets, then prints all these packets as hex
-
-- parser.py -> takes these outputted hex lines ^^, converts to bytes, and reassembles packets using the header length (in order to know when one msg ends n the other begins). it builds a typed message object (in `parse_message`) and then routes it !
-
-- orderbook.py -> logic for constructing the order book
-
-- order_entry.py -> logic for actually trying to login + start sending orders to the exchange
