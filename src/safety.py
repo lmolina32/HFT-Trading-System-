@@ -72,6 +72,9 @@ class PnLTracker:
         self.total_buys: Dict[int, int] = {}
         self.avg_buy_price: Dict[int, float] = {}
 
+    # TODO: ask about if we should be doing total pnl + pnl per symbol
+    # TODO: need to think about if we update our PnL on different operations, currenlty we only do it for add, but do not change it for delete, modify
+    # TODO: equation for PnL
     def on_fill_buy(self, symbol: int, quantity: int, price: int) -> None:
         """Updated weighted buy price on fill"""
         prev_qty = self.total_buys.get(symbol, 0)
