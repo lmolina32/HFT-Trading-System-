@@ -184,8 +184,7 @@ class RiskTracker:
         if self.last_second_time is None or current_time - self.last_second_time >= 1.0:
             self.orders_this_second = 0  # reset counter if a second has passed
             self.last_second_time = current_time  # update last 'tracked' second to rn
-        self.orders_this_second += 1
-        if self.orders_this_second > self.max_orders_per_second:
+        if self.orders_this_second >= self.max_orders_per_second:
             return (
                 False,
                 f"exceeded maximum orders per second {self.max_orders_per_second}",
@@ -194,7 +193,6 @@ class RiskTracker:
         if current_seq_num != self.last_seq_num:
             self.orders_this_seq_num = 0
             self.last_seq_num = current_seq_num
-        self.orders_this_seq_num += 1
         if self.orders_this_seq_num > self.max_per_sequence:
             return (
                 False,
@@ -207,4 +205,6 @@ class RiskTracker:
                 f"Number of unacknowledged orders {len(open_orders)} exceeds maximum allowed {self.max_unacked_orders}",
             )
 
+        self.orders_this_second += 1
+        self.orders_this_seq_num += 1
         return True, ""

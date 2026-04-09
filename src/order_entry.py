@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import socket
 import struct
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, List, Tuple
 
 from .order_book import OrderBookManager
 from .order_entry_protocol import (
@@ -371,12 +371,12 @@ class OrderEntryClient:
             return [
                 OrderReject(
                     header=OeResponseHeader(
-                        OrderReject.SIZE,
-                        int(MsgType.REJECT),
-                        OE_PROTOCOL_VERSION,
-                        0,
-                        self.seq_num,
-                        self.client_id,
+                        length=OrderReject.SIZE,
+                        msg_type=int(MsgType.REJECT),
+                        version=OE_PROTOCOL_VERSION,
+                        seq_num=0,
+                        last_seq_num=self.seq_num,
+                        client_id=self.client_id,
                     ),
                     order_id=order_id,
                     reject_reason=RejectReason.DUPLICATE_ORDER_ID,
@@ -469,12 +469,12 @@ class OrderEntryClient:
             return [
                 OrderReject(
                     header=OeResponseHeader(
-                        OrderReject.SIZE,
-                        int(MsgType.REJECT),
-                        OE_PROTOCOL_VERSION,
-                        0,
-                        self.seq_num,
-                        self.client_id,
+                        length=OrderReject.SIZE,
+                        msg_type=int(MsgType.REJECT),
+                        version=OE_PROTOCOL_VERSION,
+                        seq_num=0,
+                        last_seq_num=self.seq_num,
+                        client_id=self.client_id,
                     ),
                     order_id=order_id,
                     reject_reason=RejectReason.UNKNOWN_ORDER_ID,
@@ -567,6 +567,7 @@ class OrderEntryClient:
             return best_bid[0]
         elif best_ask:
             return best_ask[0]
+        return 0
 
     def get_pnl(self, symbol: int) -> float:
         """Compute current PnL for symbol"""

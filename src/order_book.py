@@ -432,7 +432,7 @@ class SnapShotSynchronizer:
                 dispatch_live_message(header, body, self.book_manager)
                 replayed += 1
             else:
-                skipped = 0
+                skipped += 1
         log.info(
             f"Replay complete: {replayed} messages replayed, "
             f"{skipped} skipped (seq <= {self.last_snap_seq_num})"
