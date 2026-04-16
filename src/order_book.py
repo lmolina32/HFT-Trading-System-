@@ -382,6 +382,7 @@ class SnapShotSynchronizer:
         "snap_state",
         "snap_complete",
         "completed_symbols",
+        "total_symbols",
     )
 
     def __init__(self, manager: OrderBookManager, seq_tracker: SequenceTracker) -> None:
@@ -389,6 +390,7 @@ class SnapShotSynchronizer:
         self.seq_tracker: SequenceTracker = seq_tracker
         self.sync: bool = False
         self.last_snap_seq_num: int = 0
+        self.total_symbols: int = 13
         self.live_buffer: List[Tuple[MDHeader, MarketDataMessage]] = []
         self.snap_state: Dict[int, Dict[str, int]] = {}
         self.snap_complete: bool = False
@@ -448,6 +450,7 @@ class SnapShotSynchronizer:
             self.live_buffer
             and self.live_buffer[0][0].seq_num < self.last_snap_seq_num
             and symbol in self.completed_symbols
+            and len(self.completed_symbols) == self.total_symbols
         ):
             self.snap_complete = True
             return
