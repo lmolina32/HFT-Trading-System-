@@ -136,13 +136,7 @@ def run_market_data(
                                 )
                         except BlockingIOError:
                             pass  # No data available
-                        break
-                # this is where we call trading strat
-                    
-                    
-            # this while loop updates the order book with the current market data being read in from the live and snapshot channels. 
-            # TODO: should we strategy be called here, idea is that we update on current market data being read in from epoll. Then once we have an updated order book from the live channel at that instance, we can perform trades. Only downside, since we are using python this will probably be slow and new orders (buy/sell/modifies etc.) are being sent by exchange so we do not have the most up to date view of the market data. But based on the structure of our code (market data on background, order_entry on main thread)  I think it makes the most logical sense to place it here (to sync). I don't want to run it with threads (reader-writer lock) because then we have to deal explicitly with the OS with locks. Given that we are using python we are still probably using a lot of sys calls but I would try to avoid more. We can also try to do single producer single consumer model where we push on the market data into a buffer (queue) and then the consumer is polling on the queue to see new market data, if not polling performing startegy + risk checking. But this is also similar to the model we have right now so I don't know what else to do. We do need to run this as a daemon on the background and have the main thread taking in user input. The main thread is our last line of defense if something happens, if we see our system going crazy we can send a delete all orders + quit to log us out and shut everything off. But in theory, everything will be happening in the background thread (updating orderbook + order entries (strategy) + risk checking). 
-        else: # should we just shut down here instead?
+        else:
             while True:
                 readable, _, _ = select.select(sockets, [], [], 0)
                 for sock in readable:
@@ -156,7 +150,7 @@ def run_market_data(
                             )
                     except BlockingIOError:
                         pass  # No data available
-                        
+
     except KeyboardInterrupt:
         log.info("\nShutting down")
     finally:
@@ -250,7 +244,6 @@ def main() -> None:
     )
 
     md_thread.start()
-
     client = OrderEntryClient(order_manager=manager)
     try:
         run_order_entry_cli(client)
