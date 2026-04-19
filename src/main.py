@@ -25,7 +25,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("trade_engine.log"),
+        # logging.FileHandler("trade_engine.log"),
     ],
 )
 log = logging.getLogger("main")
@@ -114,7 +114,10 @@ def run_market_data(
     log.info(f"LIVE channel:     {LIVE_MCAST_ADDR}:{MCAST_PORT}")
     log.info(f"SNAPSHOT channel: {SNAP_MCAST_ADDR}:{MCAST_PORT}")
     log.info("=" * 60)
+
     data_buffer: bytes = b""
+    live_buffer: bytes = b""
+    snap_buffer: bytes = b""
 
     try:
         if use_poll:
@@ -129,11 +132,18 @@ def run_market_data(
                         try:
                             data = sock.recv(MAX_UDP_PAYLOAD)
                             if data:
-                                clean_data = "".join(f"{b:02x}" for b in data).rstrip()
-                                data_buffer += bytes.fromhex(clean_data)
-                                data_buffer = _process_buffer(
-                                    data_buffer, manager, seq_tracker, synchronizer
-                                )
+                                if fd == live_sock.fileno():
+                                    live_buffer += data
+                                    live_buffer = _process_buffer(
+                                        live_buffer, manager, seq_tracker, synchronizer
+                                    )
+                                elif fd == snap_sock.fileno() and not synchronizer.sync:
+                                    snap_buffer += data
+                                    snap_buffer = _process_buffer(
+                                        snap_buffer, manager, seq_tracker, synchronizer
+                                    )
+                                elif synchronizer.sync:
+                                    snap_buffer = b""
                         except BlockingIOError:
                             pass  # No data available
         else:
@@ -143,8 +153,6 @@ def run_market_data(
                     try:
                         data = sock.recv(MAX_UDP_PAYLOAD)
                         if data:
-                            clean_data = "".join(f"{b:02x}" for b in data).rstrip()
-                            data_buffer += bytes.fromhex(clean_data)
                             data_buffer = _process_buffer(
                                 data_buffer, manager, seq_tracker, synchronizer
                             )

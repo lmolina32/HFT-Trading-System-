@@ -263,11 +263,12 @@ class OrderBook:
 
 
 class OrderBookManager:
-    __slots__ = ("books", "bbo_by_seq")
+    __slots__ = ("books", "bbo_by_seq", "order_id_to_symbol")
 
     def __init__(self) -> None:
         self.books: Dict[int, OrderBook] = {}
         self.bbo_by_seq: Dict[int, BBORecord] = {}
+        self.order_id_to_symbol: Dict[int, int] = {}
 
     def get_or_create_book(self, symbol: int) -> OrderBook:
         if symbol not in self.books:
@@ -290,24 +291,41 @@ class OrderBookManager:
             log.warning(
                 f"seq={seq_num}: NEW_ORDER flags={flags} != 0 for order_id={order_id}"
             )
+        self.order_id_to_symbol[order_id] = symbol
         book = self.get_or_create_book(symbol)
         book.add_order(order_id, symbol, side, qty, price, timestamp)
         self._log_bbo(book, seq_num)
 
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
-        book = self._find_book(order_id, "DELETE_ORDER", seq_num)
+        symbol = self.order_id_to_symbol.get(order_id)
+        if symbol is None:
+            raise KeyError(
+                f"Order_id: {order_id} not associated with symbol in order books"
+            )
+        book = self.books[symbol]
         book.delete_order(order_id)
+        self.order_id_to_symbol.pop(order_id)
         self._log_bbo(book, seq_num)
 
     def process_trade(self, seq_num: int, order_id: int, qty: int, price: int) -> None:
-        book = self._find_book(order_id, "TRADE", seq_num)
+        symbol = self.order_id_to_symbol.get(order_id)
+        if symbol is None:
+            raise KeyError(
+                f"Order_id: {order_id} not associated with symbol in order books"
+            )
+        book = self.books[symbol]
         book.trade_order(order_id, qty, price)
         self._log_bbo(book, seq_num)
 
     def process_modify_order(
         self, seq_num: int, order_id: int, side: SIDE, qty: int, price: int
     ) -> None:
-        book = self._find_book(order_id, "MODIFY_ORDER", seq_num)
+        symbol = self.order_id_to_symbol.get(order_id)
+        if symbol is None:
+            raise KeyError(
+                f"Order_id: {order_id} not associated with symbol in order books"
+            )
+        book = self.books[symbol]
         book.modify_order(order_id, side, qty, price)
         self._log_bbo(book, seq_num)
 
@@ -323,16 +341,6 @@ class OrderBookManager:
             f"seq={seq_num}: TRADE Summary symbol={symbol}"
             f" aggressor={'BUY' if aggressor == SIDE.BUY else 'SELL'} "
             f"total_qty={total_qty} last_price={last_price}"
-        )
-
-    def _find_book(self, order_id: int, msg: str, seq_num: int) -> OrderBook:
-        for book in self.books.values():
-            if order_id in book.orders:
-                return book
-
-        raise KeyError(
-            f"seq={seq_num}: {msg} references order_id={order_id}\n"
-            f"This is not in the book. INCONSISTENT STATE"
         )
 
     def _log_bbo(self, book: OrderBook, seq_num: int) -> None:
@@ -415,13 +423,24 @@ class SnapShotSynchronizer:
     def replay_buffered_messages(self) -> None:
         if not self.live_buffer:
             log.warning("SNAP: replay called with empty live buffer")
-            self.sync = True
+            self._reset_for_resnap()
             return
 
-        if self.live_buffer[0][0].seq_num > self.last_snap_seq_num:
-            raise ValueError(
-                f"SNAP: last snapshot seq_num read in is not greater than first live buffer seq_num"
+        first_live_seq = self.live_buffer[0][0].seq_num
+        last_live_seq = self.live_buffer[-1][0].seq_num
+        log.info(
+            f"SNAP: buffer covers seq [{first_live_seq}, {last_live_seq}], "
+            f"snapshot seq={self.last_snap_seq_num}"
+        )
+
+        if first_live_seq > self.last_snap_seq_num + 1:
+            log.error(
+                f"SNAP: GAP DETECTED — live buffer starts at {first_live_seq} "
+                f"but snapshot only covers up to {self.last_snap_seq_num}. "
+                f"Gap of {first_live_seq - self.last_snap_seq_num} messages. Re-snapshotting."
             )
+            self._reset_for_resnap()
+            return
 
         self.seq_tracker.expected_seq = self.last_snap_seq_num + 1
         replayed: int = 0
@@ -446,17 +465,22 @@ class SnapShotSynchronizer:
         symbol = body.symbol
         last_md_seq_num = body.last_md_seq_num
 
-        if (
-            self.live_buffer
-            and self.live_buffer[0][0].seq_num < self.last_snap_seq_num
-            and symbol in self.completed_symbols
-            and len(self.completed_symbols) == self.total_symbols
-        ):
-            self.snap_complete = True
-            return
+        if self.live_buffer:
+            first_live_seq = self.live_buffer[0][0].seq_num
+            if (
+                (
+                    first_live_seq < self.last_snap_seq_num
+                    or first_live_seq == self.last_snap_seq_num + 1
+                )
+                and symbol in self.completed_symbols
+                and len(self.completed_symbols) == self.total_symbols
+            ):
+                self.snap_complete = True
+                return
 
         if symbol in self.completed_symbols:
             self.completed_symbols.remove(symbol)
+            # self._reset_for_resnap()
 
         bid_count = body.bid_count
         ask_count = body.ask_count
@@ -481,11 +505,13 @@ class SnapShotSynchronizer:
             log.warning(
                 f"SNAP: NEW_ORDER for symbol={symbol} without preceding SNAPSHOT_INFO. Ignoring."
             )
+            self._reset_for_resnap()
             return
 
         if symbol in self.completed_symbols:
             raise ValueError(f"LOGIC is messed up")
 
+        self.book_manager.order_id_to_symbol[body.order_id] = symbol
         book = self.book_manager.get_or_create_book(symbol)
         book.add_order(
             order_id=body.order_id,
@@ -508,6 +534,30 @@ class SnapShotSynchronizer:
             )
             self.completed_symbols.add(symbol)
             book.validate()
+            if self.live_buffer:
+                first_live_seq = self.live_buffer[0][0].seq_num
+                if (
+                    self.live_buffer
+                    and (
+                        first_live_seq < self.last_snap_seq_num
+                        or first_live_seq == self.last_snap_seq_num + 1
+                    )
+                    and len(self.completed_symbols) == self.total_symbols
+                ):
+                    self.snap_complete = True
+                    return
+
+    def _reset_for_resnap(self) -> None:
+        self.live_buffer.clear()
+        self.snap_state.clear()
+        self.completed_symbols.clear()
+        self.last_snap_seq_num = 0
+        self.snap_complete = False
+        self.sync = False
+        for book in self.book_manager.books.values():
+            book.clear()
+        self.book_manager.order_id_to_symbol.clear()
+        log.info("SNAP: Reset complete - waiting for next snapshot cycle")
 
 
 def dispatch_live_message(
