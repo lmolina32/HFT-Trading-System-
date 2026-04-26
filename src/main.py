@@ -16,8 +16,9 @@ from .order_book import (
 )
 from .order_entry import OrderEntryClient
 from .order_entry_protocol import Side
-from .market_data_struct import MDHeader, MAGIC_NUMBER
+from .market_data_struct import MDHeader, MAGIC_NUMBER, TradeSummary
 from .parser import parse_message
+from .strategy import OrderStrategy
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,58 +37,13 @@ MCAST_PORT = 12345
 MAX_UDP_PAYLOAD = 1500
 
 
-def _process_buffer1(
-    data_buffer: bytes,
-    manager: OrderBookManager,
-    seq_tracker: SequenceTracker,
-    synchronizer: SnapShotSynchronizer,
-) -> bytes:
-    while len(data_buffer) >= MDHeader.STRUCT_SIZE:
-        header = MDHeader(data_buffer[: MDHeader.STRUCT_SIZE])
-        if len(data_buffer) < header.length:
-            break
-        packet = data_buffer[: header.length]
-        data_buffer = data_buffer[header.length :]
-        if header.magic_number == MAGIC_NUMBER:
-            if not synchronizer.sync:
-                synchronizer.buffer_live_message(header, parse_message(packet))
-            else:
-                seq_tracker.check(header.seq_num)
-                dispatch_live_message(
-                    header,
-                    parse_message(packet),
-                    manager,
-                )
-                if header.seq_num % 1000 == 0:
-                    for sym, book in sorted(manager.books.items()):
-                        bb = book.get_best_bid()
-                        ba = book.get_best_ask()
-                        log.info(
-                            f"seq={header.seq_num} sym={sym}: "
-                            f"BID={bb[1] if bb else '-'}@"
-                            f"{bb[0] if bb else '-'} | "
-                            f"ASK={ba[1] if ba else '-'}@"
-                            f"{ba[0] if ba else '-'} "
-                            f"volume={book.total_volume}"
-                        )
-
-        else:
-            if not synchronizer.sync:
-                synchronizer.handle_snapshot_message(header, parse_message(packet))
-                if synchronizer.snap_complete:
-                    log.info("Snapshot complete for all symbols\n\n")
-                    synchronizer.replay_buffered_messages()
-                    for sym, book in sorted(manager.books.items()):
-                        log.info(f" {book}")
-    return data_buffer
-
-
 def _process_buffer(
     buf: bytearray,
     buf_len: int,
     manager: OrderBookManager,
     seq_tracker: SequenceTracker,
     synchronizer: SnapShotSynchronizer,
+    strategy: OrderStrategy,
 ) -> int:
     """Returns number of unconsumed bytes remaining in buf."""
     mv = memoryview(buf)
@@ -109,7 +65,10 @@ def _process_buffer(
                 synchronizer.buffer_live_message(header, parse_message(packet_mv))
             else:
                 seq_tracker.check(header.seq_num)
-                dispatch_live_message(header, parse_message(packet_mv), manager)
+                msg = parse_message(packet_mv)
+                dispatch_live_message(header, msg, manager)
+                if strategy is not None:
+                    ...
 
                 if header.seq_num % 10_000 == 0:
                     for sym, book in sorted(manager.books.items()):
@@ -144,6 +103,7 @@ def run_market_data(
     seq_tracker: SequenceTracker,
     synchronizer: SnapShotSynchronizer,
     client: OrderEntryClient,
+    strategy: OrderStrategy,
 ) -> None:
     live_sock = create_multicast_socket(LIVE_MCAST_ADDR, MCAST_PORT, local_ip)
     snap_sock = create_multicast_socket(SNAP_MCAST_ADDR, MCAST_PORT, local_ip)
@@ -191,7 +151,12 @@ def run_market_data(
                             n = sock.recv_into(live_mv[live_len:], MAX_UDP_PAYLOAD)
                             live_len += n
                             live_len = _process_buffer(
-                                live_buf, live_len, manager, seq_tracker, synchronizer
+                                live_buf,
+                                live_len,
+                                manager,
+                                seq_tracker,
+                                synchronizer,
+                                strategy,
                             )
 
                         elif fd == snap_sock.fileno():
@@ -204,6 +169,7 @@ def run_market_data(
                                     manager,
                                     seq_tracker,
                                     synchronizer,
+                                    strategy,
                                 )
                             else:
                                 # Drain kernel buffer so it doesn't overflow, discard payload
@@ -228,93 +194,6 @@ def run_market_data(
                         )
                     except BlockingIOError:
                         pass
-
-    except KeyboardInterrupt:
-        log.info("\nShutting down")
-    finally:
-        if poller is not None:
-            poller.close()
-        live_sock.close()
-        snap_sock.close()
-
-
-def run_market_data1(
-    local_ip: str,
-    manager: OrderBookManager,
-    seq_tracker: SequenceTracker,
-    synchronizer: SnapShotSynchronizer,
-    client: OrderEntryClient,
-) -> None:
-
-    # Create multicast sockets
-    live_sock = create_multicast_socket(LIVE_MCAST_ADDR, MCAST_PORT, local_ip)
-    snap_sock = create_multicast_socket(SNAP_MCAST_ADDR, MCAST_PORT, local_ip)
-
-    sockets = [live_sock, snap_sock]
-    fd_to_sock = {s.fileno(): s for s in sockets}
-
-    data_buffer: bytes = b""
-
-    # create epoll
-    try:
-        poller: select.epoll = select.epoll()
-        use_poll: bool = True
-        for sock in sockets:
-            poller.register(sock.fileno(), select.EPOLLIN)
-    except AttributeError:
-        poller = None
-        use_poll = False
-        log.info("epoll not available, using select()")
-
-    log.info("=" * 60)
-    log.info("NDFEX Market Data Feed Handler started")
-    log.info(f"LIVE channel:     {LIVE_MCAST_ADDR}:{MCAST_PORT}")
-    log.info(f"SNAPSHOT channel: {SNAP_MCAST_ADDR}:{MCAST_PORT}")
-    log.info("=" * 60)
-
-    data_buffer: bytes = b""
-    live_buffer: bytes = b""
-    snap_buffer: bytes = b""
-
-    try:
-        if use_poll:
-            assert poller is not None
-            while True:
-                events = poller.poll(timeout=0.0)
-                for fd, event in events:
-                    if event & select.EPOLLIN:
-                        sock = fd_to_sock.get(fd)
-                        if sock is None:
-                            continue
-                        try:
-                            data = sock.recv(MAX_UDP_PAYLOAD)
-                            if data:
-                                if fd == live_sock.fileno():
-                                    live_buffer += data
-                                    live_buffer = _process_buffer(
-                                        live_buffer, manager, seq_tracker, synchronizer
-                                    )
-                                elif fd == snap_sock.fileno() and not synchronizer.sync:
-                                    snap_buffer += data
-                                    snap_buffer = _process_buffer(
-                                        snap_buffer, manager, seq_tracker, synchronizer
-                                    )
-                                elif synchronizer.sync:
-                                    snap_buffer = b""
-                        except BlockingIOError:
-                            pass  # No data available
-        else:
-            while True:
-                readable, _, _ = select.select(sockets, [], [], 0)
-                for sock in readable:
-                    try:
-                        data = sock.recv(MAX_UDP_PAYLOAD)
-                        if data:
-                            data_buffer = _process_buffer(
-                                data_buffer, manager, seq_tracker, synchronizer
-                            )
-                    except BlockingIOError:
-                        pass  # No data available
 
     except KeyboardInterrupt:
         log.info("\nShutting down")
@@ -403,10 +282,12 @@ def main() -> None:
 
     local_ip: str = sys.argv[1]
     client = OrderEntryClient(order_manager=manager)
+    strategy: OrderStrategy = OrderStrategy(client, manager)
     try:
-        run_market_data(local_ip, manager, seq_tracker, synchronizer, client)
+        run_market_data(local_ip, manager, seq_tracker, synchronizer, client, strategy)
     finally:
         log.error("\n\nShutting down all orders")
+        strategy.stop()
         client.shutdown()
 
 
