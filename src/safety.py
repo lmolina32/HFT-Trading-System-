@@ -11,20 +11,29 @@ class PositionTracker:
     Tracks net position per symbol: total_bought - total_sold. Updated on each fill from the exchange.
     """
 
-    __slots__ = ("symbol_position",)
+    __slots__ = ("symbol_position", "total_bought", "total_sold")
 
     def __init__(self):
         self.symbol_position: Dict[int, int] = {}
+        self.total_bought: Dict[int, int] = {}
+        self.total_sold: dict[int, int] = {}
 
     def update_position(self, symbol: int, buy_qty: int, sell_qty: int) -> None:
         """Update symbols position by adding (buy quantity - sell quantity)"""
         self.symbol_position[symbol] = (
             self.symbol_position.get(symbol, 0) + buy_qty - sell_qty
         )
+        if buy_qty:
+            self.total_bought[symbol] = self.total_bought.get(symbol, 0) + buy_qty
+        if sell_qty:
+            self.total_sold[symbol] = self.total_sold.get(symbol, 0) + sell_qty
 
     def get_position(self, symbol: int) -> int:
         """Return symbols current position, if not yet traded return 0"""
         return self.symbol_position.get(symbol, 0)
+
+    def get_net_position(self) -> int:
+        return sum(self.symbol_position.values())
 
 
 class ExposureTracker:
@@ -64,40 +73,56 @@ class PnLTracker:
     Tracks realized and mark-to-market PnL per symbol
     """
 
-    __slots__ = ("total_sells", "avg_sell_price", "total_buys", "avg_buy_price")
+    __slots__ = (
+        "total_sells",
+        "avg_sell_price",
+        "total_buys",
+        "avg_buy_price",
+        "min_pnl_thresh",
+        "cash",
+        "symbols",
+    )
 
-    def __init__(self) -> None:
+    def __init__(self, min_pnl_thresh: float = -5_000.0) -> None:
         self.total_sells: Dict[int, int] = {}
         self.avg_sell_price: Dict[int, float] = {}
         self.total_buys: Dict[int, int] = {}
         self.avg_buy_price: Dict[int, float] = {}
+        self.min_pnl_thresh = min_pnl_thresh
+        self.cash: float = 0.0
+        self.symbols: set[int] = set()
 
     # TODO: ask about if we should be doing total pnl + pnl per symbol
     # TODO: need to think about if we update our PnL on different operations, currenlty we only do it for add, but do not change it for delete, modify
     # TODO: equation for PnL
     def on_fill_buy(self, symbol: int, quantity: int, price: int) -> None:
         """Updated weighted buy price on fill"""
-        prev_qty = self.total_buys.get(symbol, 0)
-        prev_cost = self.avg_buy_price.get(symbol, 0.0) * prev_qty
-        new_qty = prev_qty + quantity
-        self.total_buys[symbol] = new_qty
-        self.avg_buy_price[symbol] = (prev_cost + quantity * price) / new_qty
+        # prev_qty = self.total_buys.get(symbol, 0)
+        # prev_cost = self.avg_buy_price.get(symbol, 0.0) * prev_qty
+        # new_qty = prev_qty + quantity
+        # self.total_buys[symbol] = new_qty
+        # self.avg_buy_price[symbol] = (prev_cost + quantity * price) / new_qty
+        self.cash -= float(price) * quantity
+        self.symbols.add(symbol)
 
     def on_fill_sell(self, symbol: int, quantity: int, price: int) -> None:
         """Updated weighted sell price on fill"""
-        prev_qty = self.total_sells.get(symbol, 0)
-        prev_rev = self.avg_sell_price.get(symbol, 0.0) * prev_qty
-        new_qty = prev_qty + quantity
-        self.total_sells[symbol] = new_qty
-        self.avg_sell_price[symbol] = (prev_rev + quantity * price) / new_qty
+        # prev_qty = self.total_sells.get(symbol, 0)
+        # prev_rev = self.avg_sell_price.get(symbol, 0.0) * prev_qty
+        # new_qty = prev_qty + quantity
+        # self.total_sells[symbol] = new_qty
+        # self.avg_sell_price[symbol] = (prev_rev + quantity * price) / new_qty
+        self.cash += float(price) * quantity
+        self.symbols.add(symbol)
 
-    def get_pnl(self, symbol: int, position: int, market_price: int) -> float:
+    def get_pnl(self) -> float:
         """Comput total PnL for symbol"""
-        buy_cost = self.avg_buy_price.get(symbol, 0.0) * self.total_buys.get(symbol, 0)
-        sell_revenue = self.avg_sell_price.get(symbol, 0.0) * self.total_sells.get(
-            symbol, 0
-        )
-        return sell_revenue - buy_cost + (market_price * position)
+        # buy_cost = self.avg_buy_price.get(symbol, 0.0) * self.total_buys.get(symbol, 0)
+        # sell_revenue = self.avg_sell_price.get(symbol, 0.0) * self.total_sells.get(
+        #     symbol, 0
+        # )
+        # return sell_revenue - buy_cost + (market_price * position)
+        return self.cash
 
 
 class RiskTracker:
@@ -117,6 +142,7 @@ class RiskTracker:
         "last_second_time",
         "orders_this_seq_num",
         "last_seq_num",
+        "min_pnl",
     )
 
     def __init__(self) -> None:
@@ -126,11 +152,12 @@ class RiskTracker:
         self.max_orders_per_second: int = 10
         self.max_per_sequence: int = 1000
         self.max_unacked_orders: int = 5
-        self.position_limit: int = 1000
+        self.position_limit: int = 10
         self.orders_this_second: int = 0
         self.last_second_time: Optional[float] = None
         self.orders_this_seq_num: int = 0
         self.last_seq_num: Optional[int] = None
+        self.min_pnl: int = -4_000
 
     def is_valid(
         self,
@@ -141,9 +168,17 @@ class RiskTracker:
         open_orders: Dict[int, OeConfig],
         position_tracker: PositionTracker,
         exposure_tracker: ExposureTracker,
+        pnl_tracker: PnLTracker,
         current_seq_num: int,
     ) -> Tuple[bool, str]:
         """Validate proposed order against all risk limits"""
+        if pnl_tracker.get_pnl() <= self.min_pnl:
+            return False, f"reached 1,000 off before min PNL stop trading"
+        if quantity <= 0:
+            return False, f"non-positive quantity {quantity}"
+
+        if price <= 0:
+            return False, "non-positive price"
 
         if quantity > self.max_qty_per_order:
             return (

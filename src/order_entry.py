@@ -392,6 +392,7 @@ class OrderEntryClient:
             self.open_orders,
             self.position_tracker,
             self.exposure_tracker,
+            self.pnl_tracker,
             self.resp_seq,
         )
 
@@ -573,7 +574,7 @@ class OrderEntryClient:
         """Compute current PnL for symbol"""
         position = self.position_tracker.get_position(symbol)
         mid_price = self.get_mid_price(symbol)
-        return self.pnl_tracker.get_pnl(symbol, position, mid_price)
+        return self.pnl_tracker.get_pnl()
 
     def cancel_all_orders(self) -> None:
         """Cancel every locally tracked open order"""
