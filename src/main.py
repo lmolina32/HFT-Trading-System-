@@ -68,7 +68,18 @@ def _process_buffer(
                 msg = parse_message(packet_mv)
                 dispatch_live_message(header, msg, manager)
                 if strategy is not None:
-                    ...
+                    # Feed trade summaries for signal detection
+                    if isinstance(msg, TradeSummary):
+                        strategy.on_trade_summary(
+                            msg.symbol,
+                            msg.aggressor_side,
+                            msg.total_quantity,
+                            msg.last_price,
+                            header.timestamp,
+                        )
+                    # Let strategy re-evaluate quotes
+                    strategy.on_market_data_update()
+                    log.info("entered strat")
 
                 if header.seq_num % 10_000 == 0:
                     for sym, book in sorted(manager.books.items()):
@@ -190,7 +201,12 @@ def run_market_data(
                         n = sock.recv_into(data_mv[data_len:], MAX_UDP_PAYLOAD)
                         data_len += n
                         data_len = _process_buffer(
-                            data_buf, data_len, manager, seq_tracker, synchronizer
+                            data_buf,
+                            data_len,
+                            manager,
+                            seq_tracker,
+                            synchronizer,
+                            strategy,
                         )
                     except BlockingIOError:
                         pass
@@ -282,6 +298,7 @@ def main() -> None:
 
     local_ip: str = sys.argv[1]
     client = OrderEntryClient(order_manager=manager)
+    client.login()
     strategy: OrderStrategy = OrderStrategy(client, manager)
     try:
         run_market_data(local_ip, manager, seq_tracker, synchronizer, client, strategy)
