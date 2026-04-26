@@ -98,8 +98,8 @@ class OrderEntryClient:
         username: bytes = b"team2",
         password: bytes = b"92vM31Pa",
         client_id: int = 2,
-        pnl_floor: int = -10_000,
-        position_cap: int = 100,
+        pnl_floor: int = -5_000,
+        position_cap: int = 10,
     ):
         self.username: bytes = username
         self.password: bytes = password
@@ -243,15 +243,46 @@ class OrderEntryClient:
         return bytes(buf)
 
     def _recv_message(self) -> bytes:
-        """Read full length-prefixed message over the wire"""
-        hdr_bytes = self._recv_exact(RESP_HDR_SIZE)
-        totalLength = struct.unpack_from("<H", hdr_bytes, 0)[0]
+        # TODO: test with going back this should still work I thought it was this but wasn't I wasn't logging in :(
+
+
+
+
+        # """Read full length-prefixed message over the wire"""
+        # log.info("here beofre exact")
+        # hdr_bytes = self._recv_exact(RESP_HDR_SIZE)
+        # log.info("here after exact")
+        # totalLength = struct.unpack_from("<H", hdr_bytes, 0)[0]
+        # log.info("here length exact")
+        # remaining = totalLength - RESP_HDR_SIZE
+        # if remaining < 0:
+        #     raise ValueError("Invalid sized read from malformed packet")
+        # if remaining == 0:
+        #     return hdr_bytes
+
+        # log.info("here length exact")
+        # return hdr_bytes + self._recv_exact(remaining)
+        """Read one length-prefixed message."""
+
+        def recv_exact(n):
+            buf = b""
+            while len(buf) < n:
+                chunk = self.socket.recv(n - len(buf))
+                if not chunk:
+                    raise ConnectionError("no more connection!!")
+                buf += chunk
+            return buf
+
+        buffer = recv_exact(RESP_HDR_SIZE)
+        totalLength = struct.unpack_from("<H", buffer, 0)[0]
         remaining = totalLength - RESP_HDR_SIZE
+
         if remaining < 0:
-            raise ValueError("Invalid sized read from malformed packet")
-        if remaining == 0:
-            return hdr_bytes
-        return hdr_bytes + self._recv_exact(remaining)
+            raise ValueError("wack message length")
+
+        fullMsg = buffer + (recv_exact(remaining) if remaining else b"")
+        log.debug("RECV (%d bytes): %s", len(fullMsg), fullMsg.hex())
+        return fullMsg
 
     def _send_and_recv(self, msg: bytes) -> List[OeResponse]:
         """
@@ -283,7 +314,7 @@ class OrderEntryClient:
                 except (BlockingIOError, socket.error):
                     break
         finally:
-            self.socket.setblocking(True)
+            self.socket.setblocking(False)
 
         return responses
 
@@ -297,6 +328,17 @@ class OrderEntryClient:
                     resp.order_id,
                     reason.name,
                 )
+                # TODO: maybe not crash when these are called, but maybe we want to.
+                benign = {
+                    RejectReason.UNKNOWN_ORDER_ID,
+                    RejectReason.DUPLICATE_ORDER_ID,
+                    RejectReason.INVALID_PRICE,
+                    RejectReason.INVALID_QUANTITY,
+                    RejectReason.INVALID_SIDE,
+                    RejectReason.RISK_REJECT,
+                }
+                if reason not in benign:
+                    ...
                 if reason == RejectReason.UNKNOWN_ORDER_ID:
                     self.open_orders.pop(resp.order_id, None)
                 # TODO: should we fail on all other reasons for rejected, this would indicate we have a bad trading system so I think we should
