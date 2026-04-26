@@ -2,7 +2,7 @@
 
 ## Usage (run in base directory)
 ```bash
-onload taskset -c 6 python3 -m src.main <ifconfig addresses> 
+taskset -c 5 onload env EF_SPIN_USEC=-1 EF_MAX_PACKETS=65536 EF_RXQ_SIZE=4096 EF_UDP_RCVBUF=8388608 python3 -m src.main 192.168.13.17
 
 Commands:
     buy  <oid> <sym> <qty> <price>
