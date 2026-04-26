@@ -51,9 +51,9 @@ class ExposureTracker:
     ) -> int:
         """Compute buy exposure for given symbol (position + total outstanding buy qty)"""
         outstanding: int = 0
-        for sym, side, qty, prc, filled in open_orders.values():
+        for sym, side, qty, _, filled in open_orders.values():
             if sym == symbol and side == Side.BUY:
-                outstanding += qty
+                outstanding += qty - filled
         return position + outstanding
 
     @staticmethod
@@ -62,9 +62,9 @@ class ExposureTracker:
     ) -> int:
         """Compute sell exposure for given symbol (-position + total outstanding sell qty)"""
         outstanding: int = 0
-        for sym, side, qty, prc, filled in open_orders.values():
+        for sym, side, qty, _, filled in open_orders.values():
             if sym == symbol and side == Side.SELL:
-                outstanding += qty
+                outstanding += qty - filled
         return -position + outstanding
 
 
