@@ -23,6 +23,8 @@ from .market_data_struct import (
 
 log: logging.Logger = logging.getLogger("order_book")
 
+MAX_BBO_HISTORY = 10_000
+
 
 class OrderBook:
     __slots__ = (
@@ -344,6 +346,7 @@ class OrderBookManager:
         )
 
     def _log_bbo(self, book: OrderBook, seq_num: int) -> None:
+        return
         best_bid = book.get_best_bid()
         best_ask = book.get_best_ask()
         record = BBORecord(
@@ -360,6 +363,9 @@ class OrderBookManager:
             f"ASK={best_ask[1] if best_ask else '-'}@{best_ask[0] if best_ask else '-'}"
             f" volume={book.total_volume}"
         )
+        if len(self.bbo_by_seq) > MAX_BBO_HISTORY:
+            oldest = min(self.bbo_by_seq)
+            del self.bbo_by_seq[oldest]
 
 
 class SequenceTracker:
@@ -524,10 +530,6 @@ class SnapShotSynchronizer:
 
         self.snap_state[symbol]["orders_received"] += 1
         state = self.snap_state[symbol]
-        log.info(
-            f"SNAP: symbol={symbol} count={state['orders_received']}/{state['expected_total']} \n{body}"
-        )
-
         if state["orders_received"] == state["expected_total"]:
             log.info(
                 f"SNAP: Symbol {symbol} snapshot complete. Received {state['orders_received']} orders (bids={state['bid_count']}, asks={state['ask_count']})"
