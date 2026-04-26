@@ -111,7 +111,7 @@ def _process_buffer(
                 seq_tracker.check(header.seq_num)
                 dispatch_live_message(header, parse_message(packet_mv), manager)
 
-                if header.seq_num % 100_000 == 0:
+                if header.seq_num % 10_000 == 0:
                     for sym, book in sorted(manager.books.items()):
                         bb = book.get_best_bid()
                         ba = book.get_best_ask()
