@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
-import logging
+import time
 import math
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 from collections import deque
@@ -91,7 +92,7 @@ class StrategyConfig:
     requote_threshold_ticks: int = 1
 
     symbols: list[int] = field(
-        default_factory=lambda: [2, 3, 4, 5]
+        default_factory=lambda: [1, 2]
     )  # testing purposes should up to 13 symbols
     day1_mode: bool = False
 
@@ -196,11 +197,11 @@ class OrderStrategy:
             self.stop()
             return
 
-        # TODO: need a way when we kill the program to remeber what we traded and our position, idea is to write the orderstrategy all to disk and then read from disk. should have save method + load method for it. 
-        
-        # TODO: need to create actual market strategy, this is just a bare bones implementation. 
-        
-        # TODO: This is a market making strat should be only traded with symbol one and two, need to make mean reversion strat for symbols 2-12 to stat arb symbol 13. 
+        # TODO: need a way when we kill the program to remeber what we traded and our position, idea is to write the orderstrategy all to disk and then read from disk. should have save method + load method for it.
+
+        # TODO: need to create actual market strategy, this is just a bare bones implementation.
+
+        # TODO: This is a market making strat should be only traded with symbol one and two, need to make mean reversion strat for symbols 2-12 to stat arb symbol 13.
         for sym in self.config.symbols:
             self._step_symbol(sym)
 
@@ -266,11 +267,11 @@ class OrderStrategy:
     @staticmethod
     def _compute_fair_value(bb, bb_qty, ba, ba_qty, tick) -> int:
         mid = (bb + ba) / 2.0
-        total = (bb_qty + ba_qty) / 2.0
+        total = bb_qty + ba_qty
         if total == 0:
             return mid
 
-        micro = bb + (ba - bb) * (ba_qty / total)
+        micro = bb + (ba - bb) * (bb_qty / total)
         max_dev = 0.5 * tick
         return max(mid - max_dev, min(mid + max_dev, micro))
 
@@ -290,6 +291,48 @@ class OrderStrategy:
         mean = sum(changes) / len(changes)
         var = sum((c - mean) ** 2 for c in changes) / len(changes)
         return var**0.5
+
+    def _compute_half_spread_ticks(self, state: SymbolState, symbol: int) -> int:
+        """Return half-spread as an integer number of ticks"""
+        cfg = self.config
+        half = float(cfg.base_spread_ticks)
+
+        # add volatility
+        vol_ticks = state.volatility / state.tick
+        half += vol_ticks * cfg.volatility_factor
+
+        # inventory penatly
+        position = self.client.position_tracker.get_position(symbol)
+        inventory_ratio = abs(position) / cfg.soft_position
+        half += inventory_ratio * 1.5
+
+        # wider spread day one
+        if cfg.day1_mode:
+            half += 1.0
+
+        return int(round(min(half, float(cfg.max_spread_ticks))))
+
+    def _detect_aggression(self, state: SymbolState, side: int) -> bool:
+        cfg = self.config
+        now = time.monotonic()
+        cutoff = now - cfg.trade_window
+
+        buy_vol: int = 0
+        sell_vol: int = 0
+        for trade in state.recent_trades:
+            if trade.timestamp < cutoff:
+                continue
+            if trade.aggressor_side == Side.BUY:
+                buy_vol += trade.quantity
+            else:
+                sell_vol += trade.quantity
+        total = buy_vol + sell_vol
+        if total == 0:
+            return False
+
+        if side == Side.BUY:
+            return (buy_vol / total) > cfg.aggression_threshold
+        return (sell_vol / total) > cfg.aggression_threshold
 
     def _manage_quote(self, state, side, target_price, should_quote) -> None:
         cfg = self.config
