@@ -79,7 +79,6 @@ def _process_buffer(
                         )
                     # Let strategy re-evaluate quotes
                     strategy.on_market_data_update()
-                    log.info("entered strat")
 
                 if header.seq_num % 10_000 == 0:
                     for sym, book in sorted(manager.books.items()):

@@ -191,6 +191,7 @@ class OrderStrategy:
             return
 
         total_pnl = self.pnl_tracker.get_pnl()
+        log.info(total_pnl)
         if total_pnl < self.config.pnl_kill_floor:
             log.error(f"PNL kill siwtch tripped pnl: {total_pnl}")
             self._killed = True
@@ -255,14 +256,62 @@ class OrderStrategy:
         state.last_mid = mid
         fair = self._compute_fair_value(bb, bb_qty, ba, ba_qty, tick)
 
+        # volatility
         state.volatility = self._compute_volatility(state)
 
-        fair2 = round_tick(fair, tick, Side.BUY)
-        fair1 = round_tick(fair, tick, Side.SELL)
-        should_bid = True
-        should_ask = True
-        self._manage_quote(state, Side.BUY, fair2, should_bid)
-        self._manage_quote(state, Side.SELL, fair1, should_ask)
+        # half spread ticks
+        half_spread_ticks = self._compute_half_spread_ticks(state, symbol)
+        hafl_spread_px = half_spread_ticks * tick
+
+        # inventory skew
+        position = self.client.position_tracker.get_position(symbol)
+        skew_ticks = -position * cfg.skew_per_unit
+        skew_px = skew_ticks * tick
+
+        # quote prices
+        raw_bid = fair - half_spread_ticks + skew_px
+        raw_ask = fair + hafl_spread_px + skew_px
+
+        bid_price = round_tick(raw_bid, tick, Side.BUY)
+        ask_price = round_tick(raw_ask, tick, Side.SELL)
+
+        # dont cross book
+        if bid_price >= ba:
+            bid_price = ba - tick
+        if ask_price <= bb:
+            ask_price = bb - tick
+
+        if bid_price >= ask_price:
+            return
+
+        if bid_price <= 0 or ask_price <= 0:
+            return
+
+        # position limit guards
+        should_bid = (position + cfg.order_qty) <= cfg.soft_position
+        should_ask = (position - cfg.order_qty) >= -cfg.soft_position
+
+        # tigthen position
+        if position >= cfg.panic_posiiton:
+            log.warning("PANIC LONG sym=%d pos=%d — pulling bid", symbol, position)
+            should_bid = False
+            ask_price = round_tick(fair + tick, tick, Side.SELL)
+        elif position <= -cfg.panic_posiiton:
+            log.warning("PANIC LONG sym=%d pos=%d — pulling bid", symbol, position)
+            should_ask = False
+            bid_price = round_tick(fair - tick, tick, Side.BUY)
+
+        # aggressive flow detection
+        if self._detect_aggression(state, Side.BUY):
+            ask_price += tick
+            should_bid = False
+        if self._detect_aggression(state, Side.SELL):
+            bid_price -= tick
+            should_ask = False
+
+        # place orders
+        self._manage_quote(state, Side.BUY, bid_price, should_bid)
+        self._manage_quote(state, Side.SELL, ask_price, should_ask)
 
     @staticmethod
     def _compute_fair_value(bb, bb_qty, ba, ba_qty, tick) -> int:
@@ -347,6 +396,7 @@ class OrderStrategy:
         if not should_quote:
             if current_oid is not None:
                 self._cancel_quote(state, side)
+            return
 
         if current_oid is None:
             self._place_quote(state, side, target_price)
