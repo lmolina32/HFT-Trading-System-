@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import socket
 import struct
+import time
 from typing import Optional, List, Tuple
 
 from .order_book import OrderBookManager
@@ -94,7 +95,7 @@ class OrderEntryClient:
         username: bytes = b"team2",
         password: bytes = b"92vM31Pa",
         client_id: int = 2,
-        pnl_floor: int = -5_000,
+        pnl_floor: int = -20_000,
         position_cap: int = 10,
     ):
         self.username: bytes = username
@@ -284,7 +285,7 @@ class OrderEntryClient:
                 except (BlockingIOError, socket.error):
                     break
         finally:
-            self.socket.setblocking(False)
+            self.socket.setblocking(True)
 
         return responses
 
@@ -603,16 +604,34 @@ class OrderEntryClient:
 
     def _check_limits(self, symbol: int) -> None:
         position = self.position_tracker.get_position(symbol)
-        pnl = self.get_pnl(symbol)
+        total_pnl = self.pnl_tracker.get_pnl()  # total across all symbols
 
-        if pnl < self.pnl_min_val:
-            log.warning(f"PnL for symbol {symbol} is below threshold: {pnl}")
+        if total_pnl < self.pnl_min_val:
+            log.error("KILL SWITCH: total PnL %.2f below floor %.2f — cancelling all", total_pnl, self.pnl_min_val)
             self.cancel_all_orders()
-            raise SystemExit(f"PnL limit breached for symbol {symbol}. Exiting...")
+            # Don't SystemExit — let the strategy's own kill switch handle graceful stop
         if abs(position) > self.position_limit:
-            log.warning(f"Position for symbol {symbol} is above limit: {position}")
+            log.error("KILL SWITCH: sym=%d position=%d exceeds limit=%d — cancelling all", symbol, position, self.position_limit)
             self.cancel_all_orders()
-            raise SystemExit(f"Position limit breached for symbol {symbol}. Exiting...")
+
+    def reconnect(self) -> None:
+        """Re-establish TCP connection preserving position/PnL state. open_orders cleared."""
+        log.warning("RECONNECT: connection lost — attempting reconnect")
+        self.open_orders.clear()  # exchange dropped these; don't know state
+        self.seq_num = 0
+        self.resp_seq = 0
+        self.session_id = 0
+        for attempt in range(5):
+            try:
+                self._connect()
+                self.login()
+                log.info("RECONNECT: success on attempt %d", attempt + 1)
+                return
+            except Exception as exc:
+                wait = 2 ** attempt
+                log.error("RECONNECT attempt %d failed: %s — waiting %ds", attempt + 1, exc, wait)
+                time.sleep(wait)
+        raise ConnectionError("RECONNECT: failed after 5 attempts — giving up")
 
     def shutdown(self) -> None:
         """Cancel all orders and close the connection."""

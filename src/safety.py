@@ -149,15 +149,15 @@ class RiskTracker:
         self.max_qty_per_order: int = 1000
         self.max_qty_per_side: int = 500
         self.max_exposure: int = 1000
-        self.max_orders_per_second: int = 10
+        self.max_orders_per_second: int = 30
         self.max_per_sequence: int = 1000
-        self.max_unacked_orders: int = 5
+        self.max_unacked_orders: int = 50
         self.position_limit: int = 10
         self.orders_this_second: int = 0
         self.last_second_time: Optional[float] = None
         self.orders_this_seq_num: int = 0
         self.last_seq_num: Optional[int] = None
-        self.min_pnl: int = -4_000
+        self.min_pnl: int = -18_000
 
     def is_valid(
         self,
@@ -209,7 +209,9 @@ class RiskTracker:
         if price <= 0:  # is this invalid price? anything else?
             return False, "Order price cannot be negative"
 
-        if abs(position_tracker.get_position(symbol)) >= self.position_limit:
+        _pos = position_tracker.get_position(symbol)
+        _reducing = (side == Side.SELL and _pos > 0) or (side == Side.BUY and _pos < 0)
+        if not _reducing and abs(_pos) >= self.position_limit:
             return (
                 False,
                 f"Order would exceed position limit of {self.position_limit} for symbol {symbol}",

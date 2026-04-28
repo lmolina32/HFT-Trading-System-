@@ -265,12 +265,13 @@ class OrderBook:
 
 
 class OrderBookManager:
-    __slots__ = ("books", "bbo_by_seq", "order_id_to_symbol")
+    __slots__ = ("books", "bbo_by_seq", "order_id_to_symbol", "unknown_delete_count")
 
     def __init__(self) -> None:
         self.books: Dict[int, OrderBook] = {}
         self.bbo_by_seq: Dict[int, BBORecord] = {}
         self.order_id_to_symbol: Dict[int, int] = {}
+        self.unknown_delete_count: int = 0
 
     def get_or_create_book(self, symbol: int) -> OrderBook:
         if symbol not in self.books:
@@ -301,9 +302,8 @@ class OrderBookManager:
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
         symbol = self.order_id_to_symbol.get(order_id)
         if symbol is None:
-            raise KeyError(
-                f"Order_id: {order_id} not associated with symbol in order books"
-            )
+            self.unknown_delete_count += 1
+            return
         book = self.books[symbol]
         book.delete_order(order_id)
         self.order_id_to_symbol.pop(order_id)
@@ -374,16 +374,21 @@ class SequenceTracker:
     def __init__(self):
         self.expected_seq: Optional[int] = None
 
-    def check(self, seq_num: int) -> None:
+    def check(self, seq_num: int) -> bool:
+        """Returns True if seq is clean, False on duplicate/gap (caller decides action)."""
         if self.expected_seq is None:
             self.expected_seq = seq_num + 1
-            return
+            return True
+        if seq_num < self.expected_seq:
+            log.debug("SEQ duplicate: got %d expected %d", seq_num, self.expected_seq)
+            return False
         if seq_num != self.expected_seq:
-            raise ValueError(
-                f"Sequence Gap: expected seq={self.expected_seq}, got seq={seq_num}. NEED TO RESYNC"
+            log.warning(
+                "SEQ GAP: expected %d got %d (%d missing)",
+                self.expected_seq, seq_num, seq_num - self.expected_seq,
             )
-
         self.expected_seq = seq_num + 1
+        return True
 
 
 class SnapShotSynchronizer:
@@ -439,6 +444,23 @@ class SnapShotSynchronizer:
             f"snapshot seq={self.last_snap_seq_num}"
         )
 
+        # Sort by seq_num — UDP multicast can deliver packets out of order.
+        # After sorting, strip duplicates by keeping only the first occurrence of each seq.
+        deduped: list = []
+        seen_seq: set = set()
+        for item in sorted(self.live_buffer, key=lambda x: x[0].seq_num):
+            if item[0].seq_num not in seen_seq:
+                seen_seq.add(item[0].seq_num)
+                deduped.append(item)
+
+        first_live_seq = deduped[0][0].seq_num
+        last_live_seq = deduped[-1][0].seq_num
+        log.info(
+            f"SNAP: buffer covers seq [{first_live_seq}, {last_live_seq}] "
+            f"({len(deduped)} unique / {len(self.live_buffer)} total), "
+            f"snapshot seq={self.last_snap_seq_num}"
+        )
+
         if first_live_seq > self.last_snap_seq_num + 1:
             log.error(
                 f"SNAP: GAP DETECTED — live buffer starts at {first_live_seq} "
@@ -448,21 +470,28 @@ class SnapShotSynchronizer:
             self._reset_for_resnap()
             return
 
-        self.seq_tracker.expected_seq = self.last_snap_seq_num + 1
         replayed: int = 0
         skipped: int = 0
+        last_seq: int = self.last_snap_seq_num
 
         log.info(f"SNAPSHOT SEQ: {self.last_snap_seq_num}")
-        for header, body in self.live_buffer:
-            if header.seq_num > self.last_snap_seq_num:
-                self.seq_tracker.check(header.seq_num)
-                dispatch_live_message(header, body, self.book_manager)
-                replayed += 1
-            else:
+        for header, body in deduped:
+            if header.seq_num <= self.last_snap_seq_num:
                 skipped += 1
+                continue
+            if header.seq_num != last_seq + 1:
+                log.warning(
+                    "REPLAY: seq gap %d → %d (%d missing) — continuing",
+                    last_seq, header.seq_num, header.seq_num - last_seq - 1,
+                )
+            dispatch_live_message(header, body, self.book_manager)
+            last_seq = header.seq_num
+            replayed += 1
+
+        self.seq_tracker.expected_seq = last_seq + 1
         log.info(
-            f"Replay complete: {replayed} messages replayed, "
-            f"{skipped} skipped (seq <= {self.last_snap_seq_num})"
+            f"Replay complete: {replayed} replayed, {skipped} skipped, "
+            f"next expected seq={self.seq_tracker.expected_seq}"
         )
         self.live_buffer.clear()
         self.sync = True

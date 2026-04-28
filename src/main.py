@@ -64,23 +64,40 @@ def _process_buffer(
             if not synchronizer.sync:
                 synchronizer.buffer_live_message(header, parse_message(packet_mv))
             else:
-                seq_tracker.check(header.seq_num)
+                if not seq_tracker.check(header.seq_num):
+                    continue  # duplicate packet — skip
                 msg = parse_message(packet_mv)
-                dispatch_live_message(header, msg, manager)
                 if strategy is not None:
-                    # Feed trade summaries for signal detection
-                    if isinstance(msg, TradeSummary):
-                        strategy.on_trade_summary(
-                            msg.symbol,
-                            msg.aggressor_side,
-                            msg.total_quantity,
-                            msg.last_price,
-                            header.timestamp,
-                        )
-                    # Let strategy re-evaluate quotes
-                    strategy.on_market_data_update()
+                    strategy.on_raw_message(header, msg)
+                try:
+                    dispatch_live_message(header, msg, manager)
+                except (KeyError, ValueError) as exc:
+                    log.error("BOOK ERROR seq=%d: %s — triggering resync", header.seq_num, exc)
+                    if strategy is not None:
+                        strategy.enabled = False
+                        strategy._pending_flatten = True
+                    synchronizer._reset_for_resnap()
+                    break
+                if strategy is not None:
+                    try:
+                        # Feed trade summaries for signal detection
+                        if isinstance(msg, TradeSummary):
+                            strategy.on_trade_summary(
+                                msg.symbol,
+                                msg.aggressor_side,
+                                msg.total_quantity,
+                                msg.last_price,
+                                header.timestamp,
+                            )
+                        # Let strategy re-evaluate quotes
+                        strategy.on_market_data_update()
+                    except ConnectionError:
+                        raise  # let run_market_data handle reconnect
+                    except Exception as exc:
+                        log.error("STRATEGY ERROR seq=%d: %s", header.seq_num, exc)
 
                 if header.seq_num % 10_000 == 0:
+                    log.info("seq=%d unknown_deletes=%d", header.seq_num, manager.unknown_delete_count)
                     for sym, book in sorted(manager.books.items()):
                         bb = book.get_best_bid()
                         ba = book.get_best_ask()
@@ -98,6 +115,9 @@ def _process_buffer(
                     synchronizer.replay_buffered_messages()
                     for sym, book in sorted(manager.books.items()):
                         log.info(f" {book}")
+                    # After resync, re-enable strategy — go_flat runs on next market update
+                    if strategy is not None and strategy._pending_flatten:
+                        strategy.enabled = True
 
     # Compact: slide unconsumed tail to front (single C-level memmove)
     remaining = buf_len - pos
@@ -188,6 +208,19 @@ def run_market_data(
 
                     except BlockingIOError:
                         pass
+                    except ConnectionError as exc:
+                        log.error("EXCHANGE CONNECTION LOST: %s — reconnecting", exc)
+                        if strategy is not None:
+                            strategy.enabled = False
+                            strategy._pending_flatten = True
+                        try:
+                            client.reconnect()
+                            if strategy is not None:
+                                strategy.enabled = True
+                        except ConnectionError:
+                            log.error("RECONNECT FAILED — stopping strategy")
+                            if strategy is not None:
+                                strategy._killed = True
         else:
             # select() fallback — same buffer logic, just different polling
             data_buf = bytearray(1 << 16)
@@ -211,7 +244,9 @@ def run_market_data(
                         pass
 
     except KeyboardInterrupt:
-        log.info("\nShutting down")
+        log.info("\nShutting down — going flat")
+        if strategy is not None:
+            strategy.go_flat()
     finally:
         if poller is not None:
             poller.close()

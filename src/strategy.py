@@ -12,6 +12,12 @@ from .order_entry_protocol import Side, OrderReject, ErrorMessage
 from .order_book import OrderBookManager
 from .order_entry import OrderEntryClient
 from .safety import PnLTracker, PositionTracker, ExposureTracker, RiskTracker
+from .market_data_struct import (
+    NewOrder as MdNewOrder,
+    DeleteOrder as MdDeleteOrder,
+    Trade as MdTrade,
+)
+from .etf_arb import ETFArbEngine
 
 log: logging.Logger = logging.getLogger("strategy")
 
@@ -77,6 +83,61 @@ class FairValueEngine:
         pass
 
 
+class SpoofDetector:
+    """Track large orders that get cancelled quickly — classic spoofing pattern."""
+
+    __slots__ = ("_tracked", "_avg_qty", "_bid_pressure", "_ask_pressure")
+
+    WINDOW_S: float = 2.0    # cancel within this many seconds → confirmed spoof
+    LARGE_MULT: float = 4.0  # N× running avg qty → "large" order
+    DECAY: float = 0.88      # pressure multiplier applied each symbol step
+
+    def __init__(self) -> None:
+        # order_id → (wall_time_seen, side, qty)
+        self._tracked: dict[int, tuple[float, int, int]] = {}
+        self._avg_qty: dict[int, float] = {}
+        self._bid_pressure: dict[int, float] = {}  # symbol → cumulative spoof-bid qty
+        self._ask_pressure: dict[int, float] = {}
+
+    def on_new_order(self, order_id: int, symbol: int, side: int, qty: int) -> None:
+        avg = self._avg_qty.get(symbol, float(qty))
+        self._avg_qty[symbol] = avg * 0.95 + qty * 0.05
+        if qty >= max(3, self.LARGE_MULT * avg):
+            self._tracked[order_id] = (time.monotonic(), side, qty)
+
+    def on_cancel(self, order_id: int, symbol: int) -> None:
+        entry = self._tracked.pop(order_id, None)
+        if entry is None:
+            return
+        t, side, qty = entry
+        if time.monotonic() - t < self.WINDOW_S:
+            if side == Side.BUY:
+                self._bid_pressure[symbol] = self._bid_pressure.get(symbol, 0.0) + qty
+            else:
+                self._ask_pressure[symbol] = self._ask_pressure.get(symbol, 0.0) + qty
+            log.info("SPOOF DETECTED %s sym=%d qty=%d",
+                     "BID" if side == Side.BUY else "ASK", symbol, qty)
+
+    def on_trade(self, order_id: int) -> None:
+        # Traded = not a spoof; stop tracking
+        self._tracked.pop(order_id, None)
+
+    def decay(self, symbol: int) -> None:
+        for d in (self._bid_pressure, self._ask_pressure):
+            if symbol in d:
+                v = d[symbol] * self.DECAY
+                if v < 0.5:
+                    del d[symbol]
+                else:
+                    d[symbol] = v
+
+    def bid_spoof_qty(self, symbol: int) -> float:
+        return self._bid_pressure.get(symbol, 0.0)
+
+    def ask_spoof_qty(self, symbol: int) -> float:
+        return self._ask_pressure.get(symbol, 0.0)
+
+
 @dataclass(slots=True)
 class StrategyConfig:
     base_spread_ticks: int = 1
@@ -85,16 +146,32 @@ class StrategyConfig:
     soft_position: int = 8
     panic_posiiton: int = 7
     skew_per_unit: float = 0.5
-    order_qty: int = 1
-    pnl_kill_floor: float = -4500.0
+    order_qty: int = 2
+    pnl_kill_floor: float = -18_000.0
     trade_window: float = 5.0
     aggression_threshold: float = 0.7
-    requote_threshold_ticks: int = 1
+    requote_threshold_ticks: int = 2
 
-    symbols: list[int] = field(
-        default_factory=lambda: [1, 2]
-    )  # testing purposes should up to 13 symbols
+    symbols: list[int] = field(default_factory=lambda: list(range(1, 13)))
     day1_mode: bool = False
+
+    # ETF arb
+    etf_arb_enabled: bool = True
+    etf_arb_threshold: int = 100  # min profit in raw price units to trigger
+
+    # Spoof sending — place a large visible order to move the book, then cancel fast
+    spoof_enabled: bool = True
+    spoof_qty: int = 5               # qty of the outgoing spoof order
+    spoof_offset_ticks: int = 2      # ticks behind best bid/ask (unlikely to fill)
+    spoof_lifetime_s: float = 0.4    # seconds before auto-cancel
+
+
+@dataclass(slots=True)
+class ActiveSpoof:
+    order_id: int
+    symbol: int
+    side: int
+    cancel_at: float  # time.monotonic() deadline
 
 
 @dataclass(slots=True)
@@ -157,6 +234,11 @@ class OrderStrategy:
         "_killed",
         "_total_volume",
         "state",
+        "spoof_detector",
+        "active_spoofs",
+        "etf_arb",
+        "_pending_flatten",
+        "_flatten_oid_counter",
     )
 
     def __init__(
@@ -176,22 +258,96 @@ class OrderStrategy:
 
         self._killed: bool = False
         self._total_volume: int = 0
+        self._pending_flatten: bool = False
+        self._flatten_oid_counter: int = 15_000_000
 
         self.state: dict[int, SymbolState] = {}
         for sym in self.config.symbols:
             self.state[sym] = SymbolState(symbol=sym, start_order_id=sym * 100_000)
 
+        self.spoof_detector: SpoofDetector = SpoofDetector()
+        self.active_spoofs: dict[int, ActiveSpoof] = {}
+
+        self.etf_arb: Optional[ETFArbEngine] = (
+            ETFArbEngine(
+                manager=manager,
+                client=client,
+                username=client.username.decode(),
+                password=client.password.decode(),
+                threshold=self.config.etf_arb_threshold,
+            )
+            if self.config.etf_arb_enabled
+            else None
+        )
+
     def stop(self) -> None:
         self.enabled = False
-        # TODO: get flat
+        self._cancel_active_spoofs()
         self._cancel_all_quotes()
+
+    def go_flat(self) -> None:
+        """Cancel all working orders then IOC-close every non-zero position."""
+        log.info("go_flat: cancelling working orders")
+        self._cancel_active_spoofs()
+        self._cancel_all_quotes()
+        for symbol, position in list(self.position_tracker.symbol_position.items()):
+            if position == 0:
+                continue
+            book = self.manager.books.get(symbol)
+            if book is None:
+                log.warning("go_flat: no book for sym=%d pos=%d", symbol, position)
+                continue
+            if position > 0:
+                bb, _ = book.get_best_bid()
+                if bb > 0:
+                    oid = self._next_flatten_oid()
+                    log.info("go_flat SELL sym=%d qty=%d @ %d", symbol, position, bb)
+                    try:
+                        self.client.immediate_or_cancel(oid, symbol, Side.SELL, position, bb)
+                    except Exception as exc:
+                        log.error("go_flat SELL failed sym=%d: %s", symbol, exc)
+            else:
+                ba, _ = book.get_best_ask()
+                if ba > 0:
+                    oid = self._next_flatten_oid()
+                    log.info("go_flat BUY sym=%d qty=%d @ %d", symbol, abs(position), ba)
+                    try:
+                        self.client.immediate_or_cancel(oid, symbol, Side.BUY, abs(position), ba)
+                    except Exception as exc:
+                        log.error("go_flat BUY failed sym=%d: %s", symbol, exc)
+        self._pending_flatten = False
+        log.info("go_flat: done")
+
+    def _next_flatten_oid(self) -> int:
+        oid = self._flatten_oid_counter
+        self._flatten_oid_counter += 1
+        return oid
+
+    def on_raw_message(self, header: object, msg: object) -> None:
+        """Called BEFORE dispatch_live_message so the book still has deleted orders."""
+        if isinstance(msg, MdNewOrder):
+            if msg.symbol in self.state:
+                self.spoof_detector.on_new_order(
+                    msg.order_id, msg.symbol, int(msg.side), msg.quantity
+                )
+        elif isinstance(msg, MdDeleteOrder):
+            symbol = self.manager.order_id_to_symbol.get(msg.order_id)
+            if symbol is not None and symbol in self.state:
+                self.spoof_detector.on_cancel(msg.order_id, symbol)
+        elif isinstance(msg, MdTrade):
+            self.spoof_detector.on_trade(msg.order_id)
 
     def on_market_data_update(self) -> None:
         if not self.enabled or self._killed:
             return
 
+        if self._pending_flatten:
+            self.go_flat()
+            return
+
+        self._check_active_spoofs()
+
         total_pnl = self.pnl_tracker.get_pnl()
-        log.info(total_pnl)
         if total_pnl < self.config.pnl_kill_floor:
             log.error(f"PNL kill siwtch tripped pnl: {total_pnl}")
             self._killed = True
@@ -202,9 +358,11 @@ class OrderStrategy:
 
         # TODO: need to create actual market strategy, this is just a bare bones implementation.
 
-        # TODO: This is a market making strat should be only traded with symbol one and two, need to make mean reversion strat for symbols 2-12 to stat arb symbol 13.
         for sym in self.config.symbols:
             self._step_symbol(sym)
+
+        if self.etf_arb is not None:
+            self.etf_arb.step()
 
     def on_trade_summary(
         self,
@@ -256,21 +414,27 @@ class OrderStrategy:
         state.last_mid = mid
         fair = self._compute_fair_value(bb, bb_qty, ba, ba_qty, tick)
 
+        # Spoof pressure: if large bids cancelled fast → book was fake-high → shift fair down.
+        # Large asks cancelled fast → fake-low → shift fair up.
+        bid_spoof = self.spoof_detector.bid_spoof_qty(symbol)
+        ask_spoof = self.spoof_detector.ask_spoof_qty(symbol)
+        fair += (ask_spoof - bid_spoof) * 0.05 * tick
+        self.spoof_detector.decay(symbol)
+
         # volatility
         state.volatility = self._compute_volatility(state)
 
-        # half spread ticks
+        # half spread in price units (not raw tick count)
         half_spread_ticks = self._compute_half_spread_ticks(state, symbol)
-        hafl_spread_px = half_spread_ticks * tick
+        half_spread_px = half_spread_ticks * tick
 
         # inventory skew
         position = self.client.position_tracker.get_position(symbol)
-        skew_ticks = -position * cfg.skew_per_unit
-        skew_px = skew_ticks * tick
+        skew_px = -position * cfg.skew_per_unit * tick
 
         # quote prices
-        raw_bid = fair - half_spread_ticks + skew_px
-        raw_ask = fair + hafl_spread_px + skew_px
+        raw_bid = fair - half_spread_px + skew_px
+        raw_ask = fair + half_spread_px + skew_px
 
         bid_price = round_tick(raw_bid, tick, Side.BUY)
         ask_price = round_tick(raw_ask, tick, Side.SELL)
@@ -279,7 +443,7 @@ class OrderStrategy:
         if bid_price >= ba:
             bid_price = ba - tick
         if ask_price <= bb:
-            ask_price = bb - tick
+            ask_price = bb + tick
 
         if bid_price >= ask_price:
             return
@@ -291,25 +455,31 @@ class OrderStrategy:
         should_bid = (position + cfg.order_qty) <= cfg.soft_position
         should_ask = (position - cfg.order_qty) >= -cfg.soft_position
 
-        # tigthen position
+        # tighten when inventory is extreme
         if position >= cfg.panic_posiiton:
             log.warning("PANIC LONG sym=%d pos=%d — pulling bid", symbol, position)
             should_bid = False
             ask_price = round_tick(fair + tick, tick, Side.SELL)
         elif position <= -cfg.panic_posiiton:
-            log.warning("PANIC LONG sym=%d pos=%d — pulling bid", symbol, position)
+            log.warning("PANIC SHORT sym=%d pos=%d — pulling ask", symbol, position)
             should_ask = False
             bid_price = round_tick(fair - tick, tick, Side.BUY)
 
-        # aggressive flow detection
-        if self._detect_aggression(state, Side.BUY):
+        # aggressive flow detection — widen threatened side, optionally spoof counter
+        buy_aggression = self._detect_aggression(state, Side.BUY)
+        sell_aggression = self._detect_aggression(state, Side.SELL)
+        if buy_aggression:
             ask_price += tick
             should_bid = False
-        if self._detect_aggression(state, Side.SELL):
+            if cfg.spoof_enabled:
+                self._maybe_send_spoof(state, Side.SELL, bb, ba)
+        if sell_aggression:
             bid_price -= tick
             should_ask = False
+            if cfg.spoof_enabled:
+                self._maybe_send_spoof(state, Side.BUY, bb, ba)
 
-        # place orders
+        # place / update quotes
         self._manage_quote(state, Side.BUY, bid_price, should_bid)
         self._manage_quote(state, Side.SELL, ask_price, should_ask)
 
@@ -507,6 +677,54 @@ class OrderStrategy:
             self._cancel_quote(state, Side.BUY)
             self._cancel_quote(state, Side.SELL)
 
+    def _check_active_spoofs(self) -> None:
+        """Cancel any spoof orders whose lifetime has expired."""
+        if not self.active_spoofs:
+            return
+        now = time.monotonic()
+        to_cancel = [s for s in self.active_spoofs.values() if now >= s.cancel_at]
+        for spoof in to_cancel:
+            self.client.delete_order(spoof.order_id)
+            del self.active_spoofs[spoof.order_id]
+            log.info("SPOOF CANCEL oid=%d sym=%d", spoof.order_id, spoof.symbol)
+
+    def _cancel_active_spoofs(self) -> None:
+        for spoof in list(self.active_spoofs.values()):
+            self.client.delete_order(spoof.order_id)
+        self.active_spoofs.clear()
+
+    def _maybe_send_spoof(self, state: SymbolState, side: int, bb: int, ba: int) -> None:
+        """Place a large visible order behind the best price to influence other algos.
+
+        Priced 2 ticks behind best so it's unlikely to fill immediately.
+        Auto-cancels after spoof_lifetime_s seconds via _check_active_spoofs.
+        """
+        cfg = self.config
+        # One spoof per symbol at a time
+        if any(s.symbol == state.symbol for s in self.active_spoofs.values()):
+            return
+        tick = state.tick
+        if side == Side.BUY:
+            price = round_tick(bb - cfg.spoof_offset_ticks * tick, tick, Side.BUY)
+        else:
+            price = round_tick(ba + cfg.spoof_offset_ticks * tick, tick, Side.SELL)
+        if price <= 0:
+            return
+        oid = state.alloc_order_id()
+        responses = self.client.new_order(oid, state.symbol, side, cfg.spoof_qty, price)
+        if responses and not self._is_reject(responses[0]):
+            self.active_spoofs[oid] = ActiveSpoof(
+                order_id=oid,
+                symbol=state.symbol,
+                side=side,
+                cancel_at=time.monotonic() + cfg.spoof_lifetime_s,
+            )
+            log.info(
+                "SPOOF PLACE %s sym=%d oid=%d px=%d qty=%d",
+                "BID" if side == Side.BUY else "ASK",
+                state.symbol, oid, price, cfg.spoof_qty,
+            )
+
     @staticmethod
     def _is_reject(resp: object) -> bool:
         return isinstance(resp, (OrderReject, ErrorMessage))
@@ -519,9 +737,7 @@ def microprice_calc(orderbook):
     # mean reversion
     best_bid, bid_qty = orderbook.book.get_best_bid()
     best_ask, ask_qty = orderbook.book.get_best_ask()
-    return (best_bid * ask_qty)(best_ask * bid_qty) / (
-        bid_qty + ask_qty
-    )  # double check this equation. i got it from gemini.
+    return (best_bid * ask_qty + best_ask * bid_qty) / (bid_qty + ask_qty)
 
 
 # def main():
