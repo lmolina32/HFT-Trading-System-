@@ -125,6 +125,7 @@ class OrderEntryClient:
         """Establish TCP connection to exchange"""
         self._close()
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             self.socket.connect((self.host, self.port))
             log.info(f"Succesful connection to {self.host}:{self.port}")
