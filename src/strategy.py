@@ -143,8 +143,8 @@ class StrategyConfig:
     base_spread_ticks: int = 1
     max_spread_ticks: int = 4
     volatility_factor: float = 1.5
-    soft_position: int = 8
-    panic_posiiton: int = 7
+    soft_position: int = 6
+    panic_posiiton: int = 5
     skew_per_unit: float = 0.5
     order_qty: int = 2
     pnl_kill_floor: float = -18_000.0
@@ -286,37 +286,77 @@ class OrderStrategy:
         self._cancel_all_quotes()
 
     def go_flat(self) -> None:
-        """Cancel all working orders then IOC-close every non-zero position."""
+        """Cancel all working orders then IOC-close every non-zero position.
+
+        Retries with progressively more aggressive pricing (sweeping deeper into
+        the book each attempt) until all positions are zero or a 5-second
+        deadline expires. Each retry waits 100ms for exchange responses to
+        propagate before re-checking positions.
+        """
         log.info("go_flat: cancelling working orders")
         self._cancel_active_spoofs()
         self._cancel_all_quotes()
-        for symbol, position in list(self.position_tracker.symbol_position.items()):
-            if position == 0:
-                continue
-            book = self.manager.books.get(symbol)
-            if book is None:
-                log.warning("go_flat: no book for sym=%d pos=%d", symbol, position)
-                continue
-            if position > 0:
-                bb, _ = book.get_best_bid()
-                if bb > 0:
-                    oid = self._next_flatten_oid()
-                    log.info("go_flat SELL sym=%d qty=%d @ %d", symbol, position, bb)
-                    try:
-                        self.client.immediate_or_cancel(oid, symbol, Side.SELL, position, bb)
-                    except Exception as exc:
-                        log.error("go_flat SELL failed sym=%d: %s", symbol, exc)
-            else:
-                ba, _ = book.get_best_ask()
-                if ba > 0:
-                    oid = self._next_flatten_oid()
-                    log.info("go_flat BUY sym=%d qty=%d @ %d", symbol, abs(position), ba)
-                    try:
-                        self.client.immediate_or_cancel(oid, symbol, Side.BUY, abs(position), ba)
-                    except Exception as exc:
-                        log.error("go_flat BUY failed sym=%d: %s", symbol, exc)
+
+        deadline = time.monotonic() + 5.0
+        attempt = 0
+
+        while time.monotonic() < deadline:
+            open_positions = {
+                sym: pos
+                for sym, pos in self.position_tracker.symbol_position.items()
+                if pos != 0
+            }
+            if not open_positions:
+                break
+
+            for symbol, position in open_positions.items():
+                book = self.manager.books.get(symbol)
+                if book is None:
+                    log.warning("go_flat: no book for sym=%d pos=%d", symbol, position)
+                    continue
+                tick = get_tick(symbol)
+                aggression = attempt * 2 * tick  # go 2 ticks deeper each retry
+
+                if position > 0:
+                    bb, _ = book.get_best_bid()
+                    if bb > 0:
+                        price = max(tick, bb - aggression)
+                        oid = self._next_flatten_oid()
+                        log.info(
+                            "go_flat SELL sym=%d qty=%d @ %d (attempt %d)",
+                            symbol, position, price, attempt,
+                        )
+                        try:
+                            self.client.immediate_or_cancel(oid, symbol, Side.SELL, position, price)
+                        except Exception as exc:
+                            log.error("go_flat SELL failed sym=%d: %s", symbol, exc)
+                else:
+                    ba, _ = book.get_best_ask()
+                    if ba > 0:
+                        price = ba + aggression
+                        oid = self._next_flatten_oid()
+                        log.info(
+                            "go_flat BUY sym=%d qty=%d @ %d (attempt %d)",
+                            symbol, abs(position), price, attempt,
+                        )
+                        try:
+                            self.client.immediate_or_cancel(oid, symbol, Side.BUY, abs(position), price)
+                        except Exception as exc:
+                            log.error("go_flat BUY failed sym=%d: %s", symbol, exc)
+
+            attempt += 1
+            time.sleep(0.1)
+
+        still_open = {
+            sym: pos
+            for sym, pos in self.position_tracker.symbol_position.items()
+            if pos != 0
+        }
+        if still_open:
+            log.error("go_flat: FAILED to clear positions: %s", still_open)
+        else:
+            log.info("go_flat: all positions cleared")
         self._pending_flatten = False
-        log.info("go_flat: done")
 
     def _next_flatten_oid(self) -> int:
         oid = self._flatten_oid_counter

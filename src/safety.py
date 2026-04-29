@@ -148,11 +148,11 @@ class RiskTracker:
     def __init__(self) -> None:
         self.max_qty_per_order: int = 1000
         self.max_qty_per_side: int = 500
-        self.max_exposure: int = 1000
+        self.position_limit: int = 8
+        self.max_exposure: int = self.position_limit
         self.max_orders_per_second: int = 30
         self.max_per_sequence: int = 1000
         self.max_unacked_orders: int = 50
-        self.position_limit: int = 10
         self.orders_this_second: int = 0
         self.last_second_time: Optional[float] = None
         self.orders_this_seq_num: int = 0
@@ -210,8 +210,8 @@ class RiskTracker:
             return False, "Order price cannot be negative"
 
         _pos = position_tracker.get_position(symbol)
-        _reducing = (side == Side.SELL and _pos > 0) or (side == Side.BUY and _pos < 0)
-        if not _reducing and abs(_pos) >= self.position_limit:
+        _new_pos = _pos + quantity if side == Side.BUY else _pos - quantity
+        if abs(_new_pos) > self.position_limit:
             return (
                 False,
                 f"Order would exceed position limit of {self.position_limit} for symbol {symbol}",
