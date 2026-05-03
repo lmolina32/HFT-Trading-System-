@@ -34,7 +34,6 @@ from .order_entry_protocol import (
 )
 from .safety import PositionTracker, ExposureTracker, PnLTracker, RiskTracker
 
-
 log: logging.Logger = logging.getLogger("order_entry")
 log.propagate = False
 log.info("This goes to order_entry.log (and maybe app.log)")
@@ -300,7 +299,6 @@ class OrderEntryClient:
                     resp.order_id,
                     reason.name,
                 )
-                # TODO: maybe not crash when these are called, but maybe we want to.
                 benign = {
                     RejectReason.UNKNOWN_ORDER_ID,
                     RejectReason.DUPLICATE_ORDER_ID,
@@ -313,7 +311,6 @@ class OrderEntryClient:
                     ...
                 if reason == RejectReason.UNKNOWN_ORDER_ID:
                     self.open_orders.pop(resp.order_id, None)
-                # TODO: should we fail on all other reasons for rejected, this would indicate we have a bad trading system so I think we should
                 else:
                     raise KeyError(
                         "ORDER REJECTED order_id=%d reason=%s",
@@ -366,7 +363,6 @@ class OrderEntryClient:
                 self.open_orders.pop(resp.order_id, None)
             elif isinstance(resp, ErrorMessage):
                 log.error("ERROR code=%d msg=%s", resp.error_code, resp.error_message)
-                # TODO: should we raise a keyError here?
 
     def new_order(
         self,
@@ -450,7 +446,6 @@ class OrderEntryClient:
             OrderFlags(flags).name,
         )
         # adding dict to keep track of positions for positionTracker in safety.py. bc otherwise we dk the positions during fills
-        # TODO: check if this is done during _log_resposnse after get ACk or now
         self.open_orders[order_id] = (
             symbol,
             side,
@@ -608,11 +603,20 @@ class OrderEntryClient:
         total_pnl = self.pnl_tracker.get_pnl()  # total across all symbols
 
         if total_pnl < self.pnl_min_val:
-            log.error("KILL SWITCH: total PnL %.2f below floor %.2f — cancelling all", total_pnl, self.pnl_min_val)
+            log.error(
+                "KILL SWITCH: total PnL %.2f below floor %.2f — cancelling all",
+                total_pnl,
+                self.pnl_min_val,
+            )
             self.cancel_all_orders()
             # Don't SystemExit — let the strategy's own kill switch handle graceful stop
         if abs(position) > self.position_limit:
-            log.error("KILL SWITCH: sym=%d position=%d exceeds limit=%d — cancelling all", symbol, position, self.position_limit)
+            log.error(
+                "KILL SWITCH: sym=%d position=%d exceeds limit=%d — cancelling all",
+                symbol,
+                position,
+                self.position_limit,
+            )
             self.cancel_all_orders()
 
     def reconnect(self) -> None:
@@ -629,8 +633,13 @@ class OrderEntryClient:
                 log.info("RECONNECT: success on attempt %d", attempt + 1)
                 return
             except Exception as exc:
-                wait = 2 ** attempt
-                log.error("RECONNECT attempt %d failed: %s — waiting %ds", attempt + 1, exc, wait)
+                wait = 2**attempt
+                log.error(
+                    "RECONNECT attempt %d failed: %s — waiting %ds",
+                    attempt + 1,
+                    exc,
+                    wait,
+                )
                 time.sleep(wait)
         raise ConnectionError("RECONNECT: failed after 5 attempts — giving up")
 

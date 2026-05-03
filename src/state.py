@@ -57,7 +57,9 @@ class StateStore:
 
     def load(
         self,
-    ) -> Tuple[Dict[int, int], Dict[int, float], Dict[int, Tuple[int, int, int, int, int]]]:
+    ) -> Tuple[
+        Dict[int, int], Dict[int, float], Dict[int, Tuple[int, int, int, int, int]]
+    ]:
         """Return (positions, cash, open_orders). Empty if file missing or unreadable."""
         try:
             with open(self.path) as f:
@@ -71,19 +73,13 @@ class StateStore:
             )
             return {}, {}, {}
         try:
-            # Filter out non-positive symbol keys. Old buggy code persisted
-            # cash under key 0 (a fake "total" bucket); that orphan entry
-            # has been getting carried forward across every save/load cycle
-            # and contaminating get_total_pnl. Real symbols are 1..13.
             positions = {
                 int(k): int(v)
                 for k, v in data.get("positions", {}).items()
                 if int(k) >= 1
             }
             cash = {
-                int(k): float(v)
-                for k, v in data.get("cash", {}).items()
-                if int(k) >= 1
+                int(k): float(v) for k, v in data.get("cash", {}).items() if int(k) >= 1
             }
             dropped_cash = [k for k in data.get("cash", {}) if int(k) < 1]
             if dropped_cash:

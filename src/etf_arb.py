@@ -11,24 +11,11 @@ from .order_entry import OrderEntryClient
 log = logging.getLogger("etf_arb")
 
 ETF_SYM = 13
-UNDERLYING_SYMS = list(range(3, 13))  # 3..12 inclusive
-ARB_ORDER_ID_BASE = 5_000_000         # well clear of market maker's sym*100_000 space
+UNDERLYING_SYMS = list(range(3, 13))
+ARB_ORDER_ID_BASE = 5_000_000
 
 
 class ETFArbEngine:
-    """
-    Arb between UNDY (sym 13) and its basket (1 share each of syms 3-12).
-
-    Create arb (UNDY overpriced):
-        buy 1 of each sym 3-12 at ask (IOC) → POST /create → sell 1 UNDY at bid (IOC)
-
-    Redeem arb (UNDY underpriced):
-        buy 1 UNDY at ask (IOC) → POST /redeem → sell 1 of each sym 3-12 at bid (IOC)
-
-    After each REST create/redeem the position_tracker is manually adjusted because
-    the ETF service does NOT generate exchange fills.
-    """
-
     __slots__ = (
         "manager",
         "client",
@@ -46,7 +33,7 @@ class ETFArbEngine:
         username: str,
         password: str,
         base_url: str = "http://129.74.160.245:5000",
-        threshold: int = 100,  # min profit in raw price units to fire
+        threshold: int = 100,
     ) -> None:
         self.manager = manager
         self.client = client
@@ -57,10 +44,6 @@ class ETFArbEngine:
         self.threshold = threshold
         self._cooldown_until: float = 0.0
         self._next_oid: int = ARB_ORDER_ID_BASE
-
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
 
     def step(self) -> None:
         now = time.monotonic()
@@ -87,19 +70,19 @@ class ETFArbEngine:
         if create_profit >= self.threshold:
             log.info(
                 "CREATE ARB opportunity: profit=%d UNDY_bid=%d basket_ask=%d",
-                create_profit, undy_bid, basket_ask,
+                create_profit,
+                undy_bid,
+                basket_ask,
             )
             self._execute_create_arb(undy_bid)
         elif redeem_profit >= self.threshold:
             log.info(
                 "REDEEM ARB opportunity: profit=%d basket_bid=%d UNDY_ask=%d",
-                redeem_profit, basket_bid, undy_ask,
+                redeem_profit,
+                basket_bid,
+                undy_ask,
             )
             self._execute_redeem_arb(undy_ask)
-
-    # ------------------------------------------------------------------
-    # Arb execution
-    # ------------------------------------------------------------------
 
     def _execute_create_arb(self, undy_bid: int) -> None:
         """Buy 1 of each underlying (IOC), create 1 UNDY, sell 1 UNDY (IOC)."""
@@ -139,7 +122,10 @@ class ETFArbEngine:
                     self.client.immediate_or_cancel(
                         oid, ETF_SYM, Side.SELL, 1, undy_bid
                     )
-                    log.info("CREATE ARB complete. UNDY balance: %s", data.get("undy_balance"))
+                    log.info(
+                        "CREATE ARB complete. UNDY balance: %s",
+                        data.get("undy_balance"),
+                    )
                 else:
                     log.error("CREATE failed: %s", data.get("message"))
                     self._unwind(filled, Side.SELL)
@@ -148,7 +134,11 @@ class ETFArbEngine:
                 self._unwind(filled, Side.SELL)
         else:
             # Partial — unwind what we bought
-            log.warning("CREATE ARB partial (%d/%d) — unwinding", len(filled), len(UNDERLYING_SYMS))
+            log.warning(
+                "CREATE ARB partial (%d/%d) — unwinding",
+                len(filled),
+                len(UNDERLYING_SYMS),
+            )
             self._unwind(filled, Side.SELL)
 
         self._cooldown_until = time.monotonic() + 2.0
@@ -190,17 +180,17 @@ class ETFArbEngine:
                         sold.append(sym)
                     else:
                         log.warning("REDEEM ARB: IOC sell failed sym=%d", sym)
-                log.info("REDEEM ARB complete: sold %d/%d underlyings", len(sold), len(UNDERLYING_SYMS))
+                log.info(
+                    "REDEEM ARB complete: sold %d/%d underlyings",
+                    len(sold),
+                    len(UNDERLYING_SYMS),
+                )
             else:
                 log.error("REDEEM failed: %s", data.get("message"))
         except requests.RequestException as exc:
             log.error("REDEEM REST error: %s", exc)
 
         self._cooldown_until = time.monotonic() + 2.0
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _basket_prices(self) -> tuple:
         """Return (best_ask_sum, best_bid_sum) for all underlyings, or (None, None)."""

@@ -385,7 +385,9 @@ class SequenceTracker:
         if seq_num != self.expected_seq:
             log.warning(
                 "SEQ GAP: expected %d got %d (%d missing)",
-                self.expected_seq, seq_num, seq_num - self.expected_seq,
+                self.expected_seq,
+                seq_num,
+                seq_num - self.expected_seq,
             )
         self.expected_seq = seq_num + 1
         return True
@@ -444,8 +446,6 @@ class SnapShotSynchronizer:
             f"snapshot seq={self.last_snap_seq_num}"
         )
 
-        # Sort by seq_num — UDP multicast can deliver packets out of order.
-        # After sorting, strip duplicates by keeping only the first occurrence of each seq.
         deduped: list = []
         seen_seq: set = set()
         for item in sorted(self.live_buffer, key=lambda x: x[0].seq_num):
@@ -482,7 +482,9 @@ class SnapShotSynchronizer:
             if header.seq_num != last_seq + 1:
                 log.warning(
                     "REPLAY: seq gap %d → %d (%d missing) — continuing",
-                    last_seq, header.seq_num, header.seq_num - last_seq - 1,
+                    last_seq,
+                    header.seq_num,
+                    header.seq_num - last_seq - 1,
                 )
             dispatch_live_message(header, body, self.book_manager)
             last_seq = header.seq_num

@@ -52,51 +52,19 @@ def round_tick(price: float, tick: int, side: int) -> int:
     return int(math.ceil(price / tick) * tick)
 
 
-def weigthed_mid(bid_prc: float, bid_qty: int, ask_prc: float, ask_qty: int) -> float:
-    total = bid_qty + ask_qty
-    if total == 0:
-        return (bid_prc + ask_prc) / 2.0
-    imbalance = bid_qty / total
-    return bid_prc * (1.0 - imbalance) + ask_prc * imbalance
-
-
-class ImbalanceSignal:
-    __slots__ = "alpha"
-
-    def __init__(self, alpha: float = 1.0) -> None:
-        self.alpha = alpha
-
-    def signal(
-        self, bid_prc: float, bid_qty: int, ask_prc: float, ask_qty: int
-    ) -> float:
-        mid = (bid_prc + ask_prc) / 2.0
-        return self.alpha * (weigthed_mid(bid_prc, bid_qty, ask_prc, ask_qty) - mid)
-
-
-class TradeImpactSignal:
-    def __init__(self) -> None:
-        pass
-
-
-class FairValueEngine:
-    def __init__(self) -> None:
-        pass
-
-
 class SpoofDetector:
     """Track large orders that get cancelled quickly — classic spoofing pattern."""
 
     __slots__ = ("_tracked", "_avg_qty", "_bid_pressure", "_ask_pressure")
 
-    WINDOW_S: float = 2.0    # cancel within this many seconds → confirmed spoof
-    LARGE_MULT: float = 4.0  # N× running avg qty → "large" order
-    DECAY: float = 0.88      # pressure multiplier applied each symbol step
+    WINDOW_S: float = 2.0
+    LARGE_MULT: float = 4.0
+    DECAY: float = 0.88
 
     def __init__(self) -> None:
-        # order_id → (wall_time_seen, side, qty)
         self._tracked: dict[int, tuple[float, int, int]] = {}
         self._avg_qty: dict[int, float] = {}
-        self._bid_pressure: dict[int, float] = {}  # symbol → cumulative spoof-bid qty
+        self._bid_pressure: dict[int, float] = {}
         self._ask_pressure: dict[int, float] = {}
 
     def on_new_order(self, order_id: int, symbol: int, side: int, qty: int) -> None:
@@ -115,11 +83,14 @@ class SpoofDetector:
                 self._bid_pressure[symbol] = self._bid_pressure.get(symbol, 0.0) + qty
             else:
                 self._ask_pressure[symbol] = self._ask_pressure.get(symbol, 0.0) + qty
-            log.info("SPOOF DETECTED %s sym=%d qty=%d",
-                     "BID" if side == Side.BUY else "ASK", symbol, qty)
+            log.info(
+                "SPOOF DETECTED %s sym=%d qty=%d",
+                "BID" if side == Side.BUY else "ASK",
+                symbol,
+                qty,
+            )
 
     def on_trade(self, order_id: int) -> None:
-        # Traded = not a spoof; stop tracking
         self._tracked.pop(order_id, None)
 
     def decay(self, symbol: int) -> None:
@@ -157,13 +128,13 @@ class StrategyConfig:
 
     # ETF arb
     etf_arb_enabled: bool = True
-    etf_arb_threshold: int = 100  # min profit in raw price units to trigger
+    etf_arb_threshold: int = 100
 
-    # Spoof sending — place a large visible order to move the book, then cancel fast
+    # Spoof sending
     spoof_enabled: bool = True
-    spoof_qty: int = 5               # qty of the outgoing spoof order
-    spoof_offset_ticks: int = 2      # ticks behind best bid/ask (unlikely to fill)
-    spoof_lifetime_s: float = 0.4    # seconds before auto-cancel
+    spoof_qty: int = 5
+    spoof_offset_ticks: int = 2
+    spoof_lifetime_s: float = 0.4
 
 
 @dataclass(slots=True)
@@ -171,7 +142,7 @@ class ActiveSpoof:
     order_id: int
     symbol: int
     side: int
-    cancel_at: float  # time.monotonic() deadline
+    cancel_at: float
 
 
 @dataclass(slots=True)
@@ -315,7 +286,7 @@ class OrderStrategy:
                     log.warning("go_flat: no book for sym=%d pos=%d", symbol, position)
                     continue
                 tick = get_tick(symbol)
-                aggression = attempt * 2 * tick  # go 2 ticks deeper each retry
+                aggression = attempt * 2 * tick
 
                 if position > 0:
                     bb, _ = book.get_best_bid()
@@ -324,10 +295,15 @@ class OrderStrategy:
                         oid = self._next_flatten_oid()
                         log.info(
                             "go_flat SELL sym=%d qty=%d @ %d (attempt %d)",
-                            symbol, position, price, attempt,
+                            symbol,
+                            position,
+                            price,
+                            attempt,
                         )
                         try:
-                            self.client.immediate_or_cancel(oid, symbol, Side.SELL, position, price)
+                            self.client.immediate_or_cancel(
+                                oid, symbol, Side.SELL, position, price
+                            )
                         except Exception as exc:
                             log.error("go_flat SELL failed sym=%d: %s", symbol, exc)
                 else:
@@ -337,10 +313,15 @@ class OrderStrategy:
                         oid = self._next_flatten_oid()
                         log.info(
                             "go_flat BUY sym=%d qty=%d @ %d (attempt %d)",
-                            symbol, abs(position), price, attempt,
+                            symbol,
+                            abs(position),
+                            price,
+                            attempt,
                         )
                         try:
-                            self.client.immediate_or_cancel(oid, symbol, Side.BUY, abs(position), price)
+                            self.client.immediate_or_cancel(
+                                oid, symbol, Side.BUY, abs(position), price
+                            )
                         except Exception as exc:
                             log.error("go_flat BUY failed sym=%d: %s", symbol, exc)
 
@@ -393,10 +374,6 @@ class OrderStrategy:
             self._killed = True
             self.stop()
             return
-
-        # TODO: need a way when we kill the program to remeber what we traded and our position, idea is to write the orderstrategy all to disk and then read from disk. should have save method + load method for it.
-
-        # TODO: need to create actual market strategy, this is just a bare bones implementation.
 
         for sym in self.config.symbols:
             self._step_symbol(sym)
@@ -454,8 +431,6 @@ class OrderStrategy:
         state.last_mid = mid
         fair = self._compute_fair_value(bb, bb_qty, ba, ba_qty, tick)
 
-        # Spoof pressure: if large bids cancelled fast → book was fake-high → shift fair down.
-        # Large asks cancelled fast → fake-low → shift fair up.
         bid_spoof = self.spoof_detector.bid_spoof_qty(symbol)
         ask_spoof = self.spoof_detector.ask_spoof_qty(symbol)
         fair += (ask_spoof - bid_spoof) * 0.05 * tick
@@ -659,7 +634,6 @@ class OrderStrategy:
             )
 
     def _modify_quote(self, state: SymbolState, side: int, new_price: int) -> None:
-        # TODO: can change quantity as well so add that next
         cfg = self.config
 
         if new_price % state.tick != 0:
@@ -683,8 +657,6 @@ class OrderStrategy:
             else:
                 state.ask_price = new_price
         else:
-            # Modify race conditions: order_entry.py already cleaned its state.
-            # We just clear our local tracking.
             log.warning(
                 "REQUOTE FAILED %s sym=%d oid=%d — clearing tracking",
                 "BID" if side == Side.BUY else "ASK",
@@ -733,7 +705,9 @@ class OrderStrategy:
             self.client.delete_order(spoof.order_id)
         self.active_spoofs.clear()
 
-    def _maybe_send_spoof(self, state: SymbolState, side: int, bb: int, ba: int) -> None:
+    def _maybe_send_spoof(
+        self, state: SymbolState, side: int, bb: int, ba: int
+    ) -> None:
         """Place a large visible order behind the best price to influence other algos.
 
         Priced 2 ticks behind best so it's unlikely to fill immediately.
@@ -762,33 +736,12 @@ class OrderStrategy:
             log.info(
                 "SPOOF PLACE %s sym=%d oid=%d px=%d qty=%d",
                 "BID" if side == Side.BUY else "ASK",
-                state.symbol, oid, price, cfg.spoof_qty,
+                state.symbol,
+                oid,
+                price,
+                cfg.spoof_qty,
             )
 
     @staticmethod
     def _is_reject(resp: object) -> bool:
         return isinstance(resp, (OrderReject, ErrorMessage))
-
-
-# mean reversion for ETFs
-
-
-def microprice_calc(orderbook):
-    # mean reversion
-    best_bid, bid_qty = orderbook.book.get_best_bid()
-    best_ask, ask_qty = orderbook.book.get_best_ask()
-    return (best_bid * ask_qty + best_ask * bid_qty) / (bid_qty + ask_qty)
-
-
-# def main():
-
-
-# spoofing check
-
-
-# sending spoofing
-
-
-# market maker; try to keep internal bookeeping of queues for orders we have placed. if too far back in line, cancel.
-# IMPORTANT we dont get spoofed so we dont cancel an order we r in good standing for.
-# signals that trigger this are important
