@@ -160,8 +160,8 @@ class Login:
     @classmethod
     def unpack(cls, data: bytes) -> "Login":
         fields = struct.unpack(cls.FORMAT, data[: cls.SIZE])
-        header = OeRequestHeader(*fields[:7])
-        return cls(header, fields[7], fields[8])
+        header = OeRequestHeader(*fields[:6])
+        return cls(header, fields[6], fields[7])
 
 
 @dataclass(slots=True)
@@ -226,8 +226,8 @@ class NewOrder:
     @classmethod
     def unpack(cls, data: bytes) -> "NewOrder":
         fields = struct.unpack(cls.FORMAT, data[: cls.SIZE])
-        header = OeRequestHeader(*fields[:7])
-        return cls(header, *fields[7:])
+        header = OeRequestHeader(*fields[:6])
+        return cls(header, *fields[6:])
 
 
 @dataclass(slots=True)
@@ -253,8 +253,8 @@ class DeleteOrder:
     @classmethod
     def unpack(cls, data: bytes) -> "DeleteOrder":
         fields = struct.unpack(cls.FORMAT, data[: cls.SIZE])
-        header = OeRequestHeader(*fields[:7])
-        return cls(header, fields[7])
+        header = OeRequestHeader(*fields[:6])
+        return cls(header, fields[6])
 
 
 @dataclass(slots=True)
@@ -286,8 +286,8 @@ class ModifyOrder:
     @classmethod
     def unpack(cls, data: bytes) -> "ModifyOrder":
         fields = struct.unpack(cls.FORMAT, data[: cls.SIZE])
-        header = OeRequestHeader(*fields[:7])
-        return cls(header, *fields[7:])
+        header = OeRequestHeader(*fields[:6])
+        return cls(header, *fields[6:])
 
 
 @dataclass(slots=True)
