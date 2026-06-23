@@ -37,10 +37,6 @@ TICK_SIZE: dict[int, int] = {
     13: 10,  # UNDY (ETF)
 }
 
-HARD_POSITION_LIMIT: int = 10
-HARD_PNL_FLOOR: int = -5000
-
-
 def get_tick(symbol: int) -> int:
     return TICK_SIZE.get(symbol, 5)
 

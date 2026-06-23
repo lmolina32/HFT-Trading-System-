@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import heapq
 import logging
-from typing import Dict, Optional, Tuple, List, TypeAlias
+from typing import Dict, Optional, Tuple, List
 from .market_data_struct import (
     MarketDataMessage,
     MSG_TYPE,
@@ -17,13 +17,10 @@ from .market_data_struct import (
     TradeSummary,
     SnapshotInfo,
     PriceLevel,
-    BBORecord,
     Order,
 )
 
 log: logging.Logger = logging.getLogger("order_book")
-
-MAX_BBO_HISTORY = 10_000
 
 
 class OrderBook:
@@ -202,15 +199,13 @@ class OrderBook:
         return (best_price, level.total_qty)
 
     def validate(self) -> None:
-        """add validation"""
         bb = self.get_best_bid()
         ba = self.get_best_ask()
 
-        if bb is not None and ba is not None and bb[0] >= ba[0]:
-            if bb[0] >= ba[0]:
-                raise ValueError(
-                    f"[Book {self.symbol}] best bid is greater than best ask"
-                )
+        if bb[0] > 0 and ba[0] > 0 and bb[0] >= ba[0]:
+            raise ValueError(
+                f"[Book {self.symbol}] best bid {bb[0]} >= best ask {ba[0]}"
+            )
 
         for label, levels in [("ask", self.ask_levels), ("bid", self.bid_levels)]:
             for px, lvl in levels.items():
@@ -265,11 +260,10 @@ class OrderBook:
 
 
 class OrderBookManager:
-    __slots__ = ("books", "bbo_by_seq", "order_id_to_symbol", "unknown_delete_count")
+    __slots__ = ("books", "order_id_to_symbol", "unknown_delete_count")
 
     def __init__(self) -> None:
         self.books: Dict[int, OrderBook] = {}
-        self.bbo_by_seq: Dict[int, BBORecord] = {}
         self.order_id_to_symbol: Dict[int, int] = {}
         self.unknown_delete_count: int = 0
 
@@ -297,7 +291,6 @@ class OrderBookManager:
         self.order_id_to_symbol[order_id] = symbol
         book = self.get_or_create_book(symbol)
         book.add_order(order_id, symbol, side, qty, price, timestamp)
-        self._log_bbo(book, seq_num)
 
     def process_delete_order(self, seq_num: int, order_id: int) -> None:
         symbol = self.order_id_to_symbol.get(order_id)
@@ -307,7 +300,6 @@ class OrderBookManager:
         book = self.books[symbol]
         book.delete_order(order_id)
         self.order_id_to_symbol.pop(order_id)
-        self._log_bbo(book, seq_num)
 
     def process_trade(self, seq_num: int, order_id: int, qty: int, price: int) -> None:
         symbol = self.order_id_to_symbol.get(order_id)
@@ -317,7 +309,6 @@ class OrderBookManager:
             )
         book = self.books[symbol]
         book.trade_order(order_id, qty, price)
-        self._log_bbo(book, seq_num)
 
     def process_modify_order(
         self, seq_num: int, order_id: int, side: SIDE, qty: int, price: int
@@ -329,7 +320,6 @@ class OrderBookManager:
             )
         book = self.books[symbol]
         book.modify_order(order_id, side, qty, price)
-        self._log_bbo(book, seq_num)
 
     def process_trade_summary(
         self,
@@ -344,28 +334,6 @@ class OrderBookManager:
             f" aggressor={'BUY' if aggressor == SIDE.BUY else 'SELL'} "
             f"total_qty={total_qty} last_price={last_price}"
         )
-
-    def _log_bbo(self, book: OrderBook, seq_num: int) -> None:
-        return
-        best_bid = book.get_best_bid()
-        best_ask = book.get_best_ask()
-        record = BBORecord(
-            seq_num=seq_num,
-            symbol=book.symbol,
-            best_bid_price=best_bid[0] if best_bid else None,
-            best_bid_qty=best_bid[1] if best_bid else None,
-            best_ask_price=best_ask[0] if best_ask else None,
-            best_ask_qty=best_ask[1] if best_ask else None,
-        )
-        self.bbo_by_seq[seq_num] = record
-        log.info(
-            f"seq={seq_num} sym={book.symbol}: BID={best_bid[1] if best_bid else '-'}@{best_bid[0] if best_bid else '-'} "
-            f"ASK={best_ask[1] if best_ask else '-'}@{best_ask[0] if best_ask else '-'}"
-            f" volume={book.total_volume}"
-        )
-        if len(self.bbo_by_seq) > MAX_BBO_HISTORY:
-            oldest = min(self.bbo_by_seq)
-            del self.bbo_by_seq[oldest]
 
 
 class SequenceTracker:

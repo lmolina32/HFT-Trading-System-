@@ -69,56 +69,20 @@ class ExposureTracker:
 
 
 class PnLTracker:
-    """
-    Tracks realized and mark-to-market PnL per symbol
-    """
+    """Cash-basis PnL: accumulates signed cashflow across all symbols."""
 
-    __slots__ = (
-        "total_sells",
-        "avg_sell_price",
-        "total_buys",
-        "avg_buy_price",
-        "min_pnl_thresh",
-        "cash",
-        "symbols",
-    )
+    __slots__ = ("cash",)
 
-    def __init__(self, min_pnl_thresh: float = -5_000.0) -> None:
-        self.total_sells: Dict[int, int] = {}
-        self.avg_sell_price: Dict[int, float] = {}
-        self.total_buys: Dict[int, int] = {}
-        self.avg_buy_price: Dict[int, float] = {}
-        self.min_pnl_thresh = min_pnl_thresh
+    def __init__(self) -> None:
         self.cash: float = 0.0
-        self.symbols: set[int] = set()
 
     def on_fill_buy(self, symbol: int, quantity: int, price: int) -> None:
-        """Updated weighted buy price on fill"""
-        # prev_qty = self.total_buys.get(symbol, 0)
-        # prev_cost = self.avg_buy_price.get(symbol, 0.0) * prev_qty
-        # new_qty = prev_qty + quantity
-        # self.total_buys[symbol] = new_qty
-        # self.avg_buy_price[symbol] = (prev_cost + quantity * price) / new_qty
         self.cash -= float(price) * quantity
-        self.symbols.add(symbol)
 
     def on_fill_sell(self, symbol: int, quantity: int, price: int) -> None:
-        """Updated weighted sell price on fill"""
-        # prev_qty = self.total_sells.get(symbol, 0)
-        # prev_rev = self.avg_sell_price.get(symbol, 0.0) * prev_qty
-        # new_qty = prev_qty + quantity
-        # self.total_sells[symbol] = new_qty
-        # self.avg_sell_price[symbol] = (prev_rev + quantity * price) / new_qty
         self.cash += float(price) * quantity
-        self.symbols.add(symbol)
 
     def get_pnl(self) -> float:
-        """Comput total PnL for symbol"""
-        # buy_cost = self.avg_buy_price.get(symbol, 0.0) * self.total_buys.get(symbol, 0)
-        # sell_revenue = self.avg_sell_price.get(symbol, 0.0) * self.total_sells.get(
-        #     symbol, 0
-        # )
-        # return sell_revenue - buy_cost + (market_price * position)
         return self.cash
 
 

@@ -25,9 +25,7 @@ def create_multicast_socket(
 
     # Set socket options
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1042 * 1024)
-    actual = sock.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
-    print(f"SO_RCVBUF: {actual} bytes")
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
 
     # On some systems, SO_REUSEPORT is available
     try:

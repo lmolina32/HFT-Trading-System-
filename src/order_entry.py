@@ -36,7 +36,6 @@ from .safety import PositionTracker, ExposureTracker, PnLTracker, RiskTracker
 
 log: logging.Logger = logging.getLogger("order_entry")
 log.propagate = False
-log.info("This goes to order_entry.log (and maybe app.log)")
 
 
 RESP_HDR_SIZE = OeResponseHeader.SIZE
@@ -241,18 +240,13 @@ class OrderEntryClient:
 
     def _recv_message(self) -> bytes:
         """Read full length-prefixed message over the wire"""
-        log.info("here beofre exact")
         hdr_bytes = self._recv_exact(RESP_HDR_SIZE)
-        log.info("here after exact")
-        totalLength = struct.unpack_from("<H", hdr_bytes, 0)[0]
-        log.info("here length exact")
-        remaining = totalLength - RESP_HDR_SIZE
+        total_length = struct.unpack_from("<H", hdr_bytes, 0)[0]
+        remaining = total_length - RESP_HDR_SIZE
         if remaining < 0:
             raise ValueError("Invalid sized read from malformed packet")
         if remaining == 0:
             return hdr_bytes
-
-        log.info("here length exact")
         return hdr_bytes + self._recv_exact(remaining)
 
     def _send_and_recv(self, msg: bytes) -> List[OeResponse]:
@@ -299,16 +293,6 @@ class OrderEntryClient:
                     resp.order_id,
                     reason.name,
                 )
-                benign = {
-                    RejectReason.UNKNOWN_ORDER_ID,
-                    RejectReason.DUPLICATE_ORDER_ID,
-                    RejectReason.INVALID_PRICE,
-                    RejectReason.INVALID_QUANTITY,
-                    RejectReason.INVALID_SIDE,
-                    RejectReason.RISK_REJECT,
-                }
-                if reason not in benign:
-                    ...
                 if reason == RejectReason.UNKNOWN_ORDER_ID:
                     self.open_orders.pop(resp.order_id, None)
                 else:
@@ -580,9 +564,7 @@ class OrderEntryClient:
         return 0
 
     def get_pnl(self, symbol: int) -> float:
-        """Compute current PnL for symbol"""
-        position = self.position_tracker.get_position(symbol)
-        mid_price = self.get_mid_price(symbol)
+        """Return total cash PnL (symbol arg kept for CLI compatibility)."""
         return self.pnl_tracker.get_pnl()
 
     def cancel_all_orders(self) -> None:

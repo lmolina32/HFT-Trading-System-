@@ -5,7 +5,6 @@ from __future__ import annotations
 import struct
 from enum import IntEnum
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List
 
 # symbol 1 = gold, symbol 2 = blue
 
@@ -205,16 +204,6 @@ class PriceLevel:
     price: int
     total_qty: int = 0
     order_count: int = 0
-
-
-@dataclass(slots=True)
-class BBORecord:
-    seq_num: int
-    symbol: int
-    best_bid_price: Optional[int]
-    best_bid_qty: Optional[int]
-    best_ask_price: Optional[int]
-    best_ask_qty: Optional[int]
 
 
 @dataclass(slots=True)

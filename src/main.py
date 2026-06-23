@@ -5,7 +5,6 @@ from __future__ import annotations
 import sys
 import select
 import logging
-import threading
 
 from .multicast import create_multicast_socket
 from .order_book import (
@@ -24,10 +23,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(),
-        # logging.FileHandler("trade_engine.log"),
-    ],
+    handlers=[logging.StreamHandler()],
 )
 log = logging.getLogger("main")
 
