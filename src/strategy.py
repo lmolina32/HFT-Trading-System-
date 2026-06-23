@@ -115,7 +115,7 @@ class StrategyConfig:
     max_spread_ticks: int = 4
     volatility_factor: float = 1.5
     soft_position: int = 6
-    panic_posiiton: int = 5
+    panic_position: int = 5
     skew_per_unit: float = 0.5
     order_qty: int = 2
     pnl_kill_floor: float = -18_000.0
@@ -471,11 +471,11 @@ class OrderStrategy:
         should_ask = (position - cfg.order_qty) >= -cfg.soft_position
 
         # tighten when inventory is extreme
-        if position >= cfg.panic_posiiton:
+        if position >= cfg.panic_position:
             log.warning("PANIC LONG sym=%d pos=%d — pulling bid", symbol, position)
             should_bid = False
             ask_price = round_tick(fair + tick, tick, Side.SELL)
-        elif position <= -cfg.panic_posiiton:
+        elif position <= -cfg.panic_position:
             log.warning("PANIC SHORT sym=%d pos=%d — pulling ask", symbol, position)
             should_ask = False
             bid_price = round_tick(fair - tick, tick, Side.BUY)
