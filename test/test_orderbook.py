@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 
 import unittest
-import sys
-import os
 
-# Add parent directory to path to import the modules
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _path_setup  # noqa: F401
 
 from src.order_book import OrderBook
 from src.market_data_struct import SIDE
